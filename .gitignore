@@ -8,3 +8,4 @@ config.json
 audit.log
 *.bin
 *.elf
+brag-output/
