@@ -12,6 +12,7 @@
 #include "config.h"
 #include "html_ui.h"
 #include "trap_ui.h"
+#include "watchtower_logic.h"
 
 ADC_MODE(ADC_VCC);
 
@@ -208,22 +209,13 @@ void saveConfig() {
 // --- Remote Wake-Up Switch ---
 void sendWakeOnLan(const char* macStr) {
   uint8_t mac[6];
-  int parsed = sscanf(macStr, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-                      &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
-  if (parsed != 6) {
-    parsed = sscanf(macStr, "%hhx-%hhx-%hhx-%hhx-%hhx-%hhx",
-                    &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
-  }
-  if (parsed != 6) {
+  if (!parseMacAddress(macStr, mac)) {
     addLog("WOL", String("Invalid Hardware ID: ") + macStr, "warn");
     return;
   }
 
   uint8_t packet[102];
-  memset(packet, 0xFF, 6);
-  for (int i = 0; i < 16; i++) {
-    memcpy(&packet[6 + i * 6], mac, 6);
-  }
+  buildMagicPacket(mac, packet);
 
   udp.beginPacket(IPAddress(255, 255, 255, 255), 9);
   udp.write(packet, sizeof(packet));
@@ -474,6 +466,11 @@ void runNetworkWatchdog() {
   if (WiFi.status() != WL_CONNECTED) {
     metrics.internet_ping_ms = -1;
     metrics.gateway_ping_ms = -1;
+    static unsigned long lastReconnect = 0;
+    if (strlen(cfg_ssid) > 0 && millis() - lastReconnect > 15000) {
+      lastReconnect = millis();
+      WiFi.reconnect();
+    }
     return;
   }
 
@@ -515,11 +512,21 @@ void setup() {
 
   for (int i = 0; i < PING_HISTORY_LEN; i++) pingHistory[i] = 15;
 
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS);
-
   if (strlen(cfg_ssid) > 0) {
+    WiFi.mode(WIFI_STA);
+    Serial.printf("[WIFI] Connecting to %s in Station Mode...\n", cfg_ssid);
     WiFi.begin(cfg_ssid, cfg_pass);
+    int8_t res = WiFi.waitForConnectResult(15000);
+    if (res == WL_CONNECTED) {
+      Serial.printf("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    } else {
+      Serial.printf("[WIFI] Connection result: %d. Activating fallback AP...\n", res);
+      WiFi.mode(WIFI_AP_STA);
+      WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS);
+    }
+  } else {
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS);
   }
 
   if (MDNS.begin(HOSTNAME)) {
@@ -610,12 +617,53 @@ void handleSerialCLI() {
     Serial.println("report                 - Send Daily Morning Report to Discord right now");
     Serial.println("alert                  - Simulate burglar alarm test");
     Serial.println("reboot                 - Restart Sentinel");
+    Serial.println("printconfig            - Inspect active configuration");
+    Serial.println("wifi <ssid> <pass>     - Configure Wi-Fi credentials");
+    Serial.println("reconnect              - Trigger Wi-Fi reconnection");
     Serial.println("==============================\n");
+  } else if (line.equalsIgnoreCase("reconnect")) {
+    Serial.println("Triggering Wi-Fi reconnection...");
+    WiFi.disconnect();
+    delay(200);
+    WiFi.begin(cfg_ssid, cfg_pass);
+  } else if (line.equalsIgnoreCase("diag")) {
+    Serial.printf("Mode: %d | Channel: %d | Status: %d | SSID: %s | IP: %s\n",
+                  (int)WiFi.getMode(), (int)WiFi.channel(), (int)WiFi.status(),
+                  WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+  } else if (line.equalsIgnoreCase("scan")) {
+    int n = WiFi.scanNetworks();
+    Serial.printf("Found %d networks:\n", n);
+    for (int i = 0; i < n; i++) {
+      Serial.printf("  %s (%d dBm, ch %d, enc %d)\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i), WiFi.encryptionType(i));
+    }
+  } else if (line.equalsIgnoreCase("printconfig")) {
+    Serial.printf("Config: SSID='%s' PassLen=%zu WebhookLen=%zu IP=%s Status=%d\n",
+                  cfg_ssid, strlen(cfg_pass), strlen(cfg_webhook), WiFi.localIP().toString().c_str(), (int)WiFi.status());
+  } else if (line.startsWith("wifi ")) {
+    int firstSpace = line.indexOf(' ');
+    int secondSpace = line.indexOf(' ', firstSpace + 1);
+    if (secondSpace > firstSpace) {
+      String s = line.substring(firstSpace + 1, secondSpace);
+      String p = line.substring(secondSpace + 1);
+      s.trim();
+      p.trim();
+      strncpy(cfg_ssid, s.c_str(), sizeof(cfg_ssid) - 1);
+      strncpy(cfg_pass, p.c_str(), sizeof(cfg_pass) - 1);
+      saveConfig();
+      Serial.printf("Config saved. Connecting to %s...\n", cfg_ssid);
+      WiFi.begin(cfg_ssid, cfg_pass);
+    }
+  } else if (line.startsWith("webhook ")) {
+    String url = line.substring(8);
+    url.trim();
+    strncpy(cfg_webhook, url.c_str(), sizeof(cfg_webhook) - 1);
+    saveConfig();
+    Serial.printf("Direct alert webhook saved (len=%zu)\n", strlen(cfg_webhook));
   } else if (line.equalsIgnoreCase("status")) {
     Serial.printf("Guarding for: %lu s | Free Memory: %u bytes | Power: %u mV\n",
                   millis() / 1000, ESP.getFreeHeap(), ESP.getVcc());
-    Serial.printf("Wi-Fi: %s (%s) | Internet Lag: %d ms | Router Lag: %d ms\n",
-                  WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(),
+    Serial.printf("Wi-Fi: %s (%s) [status=%d] | Internet Lag: %d ms | Router Lag: %d ms\n",
+                  WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), (int)WiFi.status(),
                   metrics.internet_ping_ms, metrics.gateway_ping_ms);
   } else if (line.equalsIgnoreCase("report")) {
     sendDailyMorningReport();

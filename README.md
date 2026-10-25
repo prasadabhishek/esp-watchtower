@@ -123,5 +123,16 @@ You can now directly open `http://<ESP_LOCAL_IP>` from your phone or laptop anyw
 
 ---
 
+## 🧪 Running Unit Tests
+
+ESP-Watchtower includes a host-native unit test suite testing pure logic (MAC parsing, Wake-on-LAN Magic Packet generation, outage duration math, packet loss formulas, uptime formatting, Discord JSON payload escaping) without requiring physical hardware:
+
+```bash
+# Run host-native unit tests via PlatformIO
+pio test -e native
+```
+
+---
+
 ## 📜 License
 This project is open-source under the [MIT License](LICENSE).
