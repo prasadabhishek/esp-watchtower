@@ -5,6 +5,17 @@
 
 ---
 
+<p align="center">
+  <a href="https://github.com/prasadabhishek/esp-watchtower/raw/main/docs/assets/brag.mp4">
+    <img src="docs/assets/demo.gif" alt="ESP-Watchtower 19-Second Tour" width="100%">
+  </a>
+</p>
+<p align="center">
+  🎬 <em>19-second video tour. <strong><a href="https://github.com/prasadabhishek/esp-watchtower/raw/main/docs/assets/brag.mp4">Click to watch/download full 1080p video with audio (brag.mp4)</a></strong>.</em>
+</p>
+
+---
+
 ## ⚡ What is ESP-Watchtower?
 
 ESP-Watchtower transforms a cheap **$3 ESP8266 microcontroller** into a dedicated, 24/7 hardware sentinel for your home network. It guards your local network from intrusions, watches your internet connection health, alerts you to power outages, and notifies you immediately on Discord whenever suspicious activity occurs.
