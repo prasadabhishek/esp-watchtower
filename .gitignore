@@ -1,0 +1,10 @@
+.pio/
+.vscode/
+.idea/
+*.local
+.DS_Store
+data/
+config.json
+audit.log
+*.bin
+*.elf
