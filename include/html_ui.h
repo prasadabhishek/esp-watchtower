@@ -284,11 +284,11 @@ const char HTML_PAGE_END[] PROGMEM = R"rawliteral(
     <!-- WI-FI SETUP CARD -->
     <div style="background:#0f141c;border:1px solid var(--bdr);padding:10px;margin-bottom:12px">
       <div style="color:var(--hi);font-weight:700;margin-bottom:6px">📶 Home Wi-Fi Network Setup</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <input id="wfSsid" placeholder="Wi-Fi Name (SSID, e.g. Sasta_Internet)" style="flex:1" title="Your Wi-Fi SSID">
-        <input id="wfPass" type="password" placeholder="Wi-Fi Password" style="flex:1" title="Your Wi-Fi Password">
-        <button class="btn btn-p" onclick="saveWifi()" title="Save and connect to Wi-Fi">💾 Connect to Wi-Fi</button>
-      </div>
+      <form method="POST" action="/api/wifi" onsubmit="event.preventDefault();saveWifi();" style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="wfSsid" name="ssid" placeholder="Wi-Fi Name (SSID, e.g. Sasta_Internet)" style="flex:1" title="Your Wi-Fi SSID" required>
+        <input id="wfPass" name="pass" type="password" placeholder="Wi-Fi Password" style="flex:1" title="Your Wi-Fi Password">
+        <button type="submit" class="btn btn-p" title="Save and connect to Wi-Fi">💾 Connect to Wi-Fi</button>
+      </form>
       <div id="wfMsg" style="font-size:11.5px;color:var(--dim);margin-top:6px">Current Network: <b id="wfCur">Connecting...</b></div>
     </div>
 

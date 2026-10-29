@@ -481,11 +481,18 @@ inline void sendJsonError(int code = 400) {
 inline bool isAuthorizedPost() {
   if (server.hasHeader("Origin")) {
     String origin = server.header("Origin");
-    if (origin.indexOf("192.168.50.191") < 0 && origin.indexOf(HOSTNAME) < 0) {
-      return false; // Rejected cross-origin CSRF attempt
-    }
+    return isAuthorizedOrigin(origin.c_str(), WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str(), HOSTNAME);
   }
   return true;
+}
+
+void sendProgmemChunked(PGM_P pgmStr, size_t len) {
+  const size_t CHUNK_SIZE = 1024;
+  for (size_t offset = 0; offset < len; offset += CHUNK_SIZE) {
+    size_t chunkLen = (len - offset < CHUNK_SIZE) ? (len - offset) : CHUNK_SIZE;
+    server.sendContent_P(pgmStr + offset, chunkLen);
+    yield();
+  }
 }
 
 void handleRoot() {
@@ -497,36 +504,33 @@ void handleRoot() {
   String flt = server.arg("flt");
   bool filterVip = (flt == "vip");
 
-  LanDevice sortedList[MAX_LAN_DEVICES];
   uint8_t count = lanDeviceCount;
-  memcpy(sortedList, lanDevices, count * sizeof(LanDevice));
-  sortDeviceList(sortedList, count, sortKey.c_str(), desc);
+  sortDeviceList(lanDevices, count, sortKey.c_str(), desc);
 
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.send(200, "text/html", "");
+  server.chunkedResponseModeStart(200, "text/html");
 
-  server.sendContent_P(HTML_PAGE_HEAD);
+  sendProgmemChunked(HTML_PAGE_HEAD, sizeof(HTML_PAGE_HEAD) - 1);
 
   // 1. Render Outages Table (Server-side rendered, NO JS)
+  static char rowBuf[768];
   if (outageHistoryCount == 0) {
     server.sendContent(PSTR("<tr><td colspan='5' style='color:var(--dim);text-align:center;padding:12px'>✅ No confirmed ISP outages recorded. Local router and WAN have remained connected.</td></tr>"));
   } else {
-    char outBuf[320];
     uint32_t nowSec = millis() / 1000;
     for (int i = (int)outageHistoryCount - 1; i >= 0; i--) {
       uint32_t ago = (nowSec >= outageHistory[i].start_sec) ? (nowSec - outageHistory[i].start_sec) : 0;
       uint32_t dur = outageHistory[i].duration_sec;
       bool act = outageHistory[i].is_active;
-      snprintf(outBuf, sizeof(outBuf),
+      snprintf(rowBuf, sizeof(rowBuf),
         "<tr><td><b>#%u</b></td><td>%us ago</td><td>%um %us</td><td><span class='bdg %s'>%s</span></td><td><span style='color:var(--grn)'>Confirmed ISP Failure (Router was Online)</span></td></tr>",
         outageHistory[i].id, ago, dur / 60, dur % 60,
         act ? "off" : "on", act ? "🔴 ONGOING" : "✅ RESTORED");
-      server.sendContent(outBuf);
+      server.sendContent(rowBuf);
     }
   }
 
   // 2. Render Device Header with Sortable Links (100% C++ server-side, NO JAVASCRIPTS)
-  server.sendContent_P(HTML_DEV_HEADER);
+  sendProgmemChunked(HTML_DEV_HEADER, sizeof(HTML_DEV_HEADER) - 1);
 
   auto makeSortTh = [&](const char* key, const char* label, const char* title) {
     bool isCur = (sortKey == key);
@@ -547,21 +551,20 @@ void handleRoot() {
   makeSortTh("status", "STATUS", "Sort by Online / Offline Status");
   server.sendContent(PSTR("<th>WAKE UP</th>"));
 
-  server.sendContent_P(HTML_PAGE_FOOT);
+  sendProgmemChunked(HTML_PAGE_FOOT, sizeof(HTML_PAGE_FOOT) - 1);
 
   // 3. Render Device Rows (Server-side rendered, NO JS)
-  char rowBuf[768];
   uint32_t nowSec = millis() / 1000;
   for (uint8_t i = 0; i < count; i++) {
-    if (filterVip && !sortedList[i].is_vip) continue;
+    if (filterVip && !lanDevices[i].is_vip) continue;
 
     char ipStr[16], macStr[18];
-    ipToString(sortedList[i].ip, ipStr, sizeof(ipStr));
-    macToString(sortedList[i].mac, macStr, sizeof(macStr));
-    bool isZeroMac = (sortedList[i].mac[0] == 0 && sortedList[i].mac[1] == 0 && sortedList[i].mac[2] == 0 &&
-                      sortedList[i].mac[3] == 0 && sortedList[i].mac[4] == 0 && sortedList[i].mac[5] == 0);
-    bool isPriv = isRandomizedMac(sortedList[i].mac);
-    uint32_t seenAgo = (nowSec >= sortedList[i].last_seen_sec) ? (nowSec - sortedList[i].last_seen_sec) : 0;
+    ipToString(lanDevices[i].ip, ipStr, sizeof(ipStr));
+    macToString(lanDevices[i].mac, macStr, sizeof(macStr));
+    bool isZeroMac = (lanDevices[i].mac[0] == 0 && lanDevices[i].mac[1] == 0 && lanDevices[i].mac[2] == 0 &&
+                      lanDevices[i].mac[3] == 0 && lanDevices[i].mac[4] == 0 && lanDevices[i].mac[5] == 0);
+    bool isPriv = isRandomizedMac(lanDevices[i].mac);
+    uint32_t seenAgo = (nowSec >= lanDevices[i].last_seen_sec) ? (nowSec - lanDevices[i].last_seen_sec) : 0;
 
     snprintf(rowBuf, sizeof(rowBuf),
       "<tr>"
@@ -575,21 +578,21 @@ void handleRoot() {
       "<td><span class='bdg %s'>%s</span></td>"
       "<td>%s</td>"
       "</tr>",
-      ipStr, sortedList[i].is_vip ? "false" : "true", sortedList[i].is_vip ? "★" : "☆",
-      sortedList[i].track_presence ? "btn-p" : "", ipStr, sortedList[i].track_presence ? "false" : "true", sortedList[i].track_presence ? "🏠 Tracking" : "⚪ Off",
+      ipStr, lanDevices[i].is_vip ? "false" : "true", lanDevices[i].is_vip ? "★" : "☆",
+      lanDevices[i].track_presence ? "btn-p" : "", ipStr, lanDevices[i].track_presence ? "false" : "true", lanDevices[i].track_presence ? "🏠 Tracking" : "⚪ Off",
       ipStr,
-      macStr, sortedList[i].vendor, isPriv ? " <span class='bdg vip'>Private MAC</span>" : "",
-      sortedList[i].name, ipStr, sortedList[i].name, sortedList[i].is_vip ? " <span class='bdg vip'>VIP</span>" : "",
-      sortedList[i].is_online && sortedList[i].latency_ms >= 0 ? (String(sortedList[i].latency_ms) + " ms").c_str() : "--",
+      macStr, lanDevices[i].vendor, isPriv ? " <span class='bdg vip'>Private MAC</span>" : "",
+      lanDevices[i].name, ipStr, lanDevices[i].name, lanDevices[i].is_vip ? " <span class='bdg vip'>VIP</span>" : "",
+      lanDevices[i].is_online && lanDevices[i].latency_ms >= 0 ? (String(lanDevices[i].latency_ms) + " ms").c_str() : "--",
       seenAgo,
-      sortedList[i].is_online ? "on" : "off", sortedList[i].is_online ? "ONLINE" : "OFFLINE",
+      lanDevices[i].is_online ? "on" : "off", lanDevices[i].is_online ? "ONLINE" : "OFFLINE",
       isZeroMac ? "<span style='color:var(--dim)'>--</span>" : (String("<button class='btn' onclick=\"post('/api/wol',{mac:'") + macStr + "'})\">⚡Turn On</button>").c_str()
     );
     server.sendContent(rowBuf);
   }
 
-  server.sendContent_P(HTML_PAGE_END);
-  server.sendContent(""); // End chunked response
+  sendProgmemChunked(HTML_PAGE_END, sizeof(HTML_PAGE_END) - 1);
+  server.chunkedResponseFinalize();
 }
 
 void setupDashboardServer() {
@@ -854,20 +857,50 @@ void setupDashboardServer() {
 
   server.on("/api/wifi", HTTP_POST, []() {
     if (!isAuthorizedPost()) { sendJsonError(403); return; }
+    String s = "";
+    String p = "";
+
     if (server.hasArg("plain")) {
       JsonDocument doc;
       deserializeJson(doc, server.arg("plain"));
-      const char* ssid = doc["ssid"];
-      const char* pass = doc["pass"];
-      if (ssid && strlen(ssid) > 0) {
-        strncpy(cfg_ssid, ssid, sizeof(cfg_ssid) - 1);
-        if (pass) strncpy(cfg_pass, pass, sizeof(cfg_pass) - 1);
-        saveConfig();
+      if (doc["ssid"].is<const char*>()) s = doc["ssid"].as<String>();
+      if (doc["pass"].is<const char*>()) p = doc["pass"].as<String>();
+    } else {
+      if (server.hasArg("ssid")) s = server.arg("ssid");
+      if (server.hasArg("pass")) p = server.arg("pass");
+    }
+
+    s.trim();
+    p.trim();
+
+    if (s.length() > 0) {
+      strncpy(cfg_ssid, s.c_str(), sizeof(cfg_ssid) - 1);
+      strncpy(cfg_pass, p.c_str(), sizeof(cfg_pass) - 1);
+      saveConfig();
+      addLog("SYSTEM", String("Saved home Wi-Fi: ") + cfg_ssid, "info");
+      Serial.printf("[WIFI] New credentials saved: SSID='%s'\n", cfg_ssid);
+
+      if (server.hasArg("plain")) {
         server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Saved! Connecting...\"}");
-        WiFi.begin(cfg_ssid, cfg_pass);
-        addLog("SYSTEM", String("Connecting to home Wi-Fi: ") + cfg_ssid, "info");
-        return;
+      } else {
+        server.sendHeader("Location", "/?saved=1#sec-settings", true);
+        server.send(302, "text/plain", "");
       }
+
+      if (strcmp(cfg_ssid, "Sasta_Internet") == 0) {
+        IPAddress staticIp(192, 168, 50, 191);
+        IPAddress gwIp(192, 168, 50, 1);
+        IPAddress mask(255, 255, 255, 0);
+        IPAddress dns(192, 168, 50, 1);
+        WiFi.config(staticIp, gwIp, mask, dns);
+      } else {
+        WiFi.config(0U, 0U, 0U);
+      }
+
+      WiFi.disconnect();
+      delay(100);
+      WiFi.begin(cfg_ssid, cfg_pass);
+      return;
     }
     sendJsonError();
   });
@@ -1033,15 +1066,6 @@ void runNetworkWatchdog() {
   if (WiFi.status() != WL_CONNECTED) {
     metrics.internet_ping_ms = -1;
     metrics.gateway_ping_ms = -1;
-    static unsigned long lastReconnect = 0;
-    if (lastReconnect == 0) lastReconnect = millis();
-    if (strlen(cfg_ssid) > 0 && millis() - lastReconnect > 40000) {
-      lastReconnect = millis();
-      Serial.printf("[WIFI] Re-associating with %s (status=%d)...\n", cfg_ssid, (int)WiFi.status());
-      WiFi.disconnect();
-      delay(100);
-      WiFi.begin(cfg_ssid, cfg_pass);
-    }
     return;
   }
 
@@ -1306,26 +1330,23 @@ void setup() {
     Serial.printf("[WIFI EVENT] Connected! IP: %s, GW: %s\n", evt.ip.toString().c_str(), evt.gw.toString().c_str());
   });
 
+  IPAddress apIP(192, 168, 4, 1);
   WiFi.mode(WIFI_AP_STA);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
   WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS);
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
   WiFi.setAutoReconnect(true);
 
   if (strlen(cfg_ssid) > 0) {
-    Serial.printf("[WIFI] Connecting to %s (pass len %zu)...\n", cfg_ssid, strlen(cfg_pass));
+    if (strcmp(cfg_ssid, "Sasta_Internet") == 0) {
+      IPAddress staticIp(192, 168, 50, 191);
+      IPAddress gwIp(192, 168, 50, 1);
+      IPAddress mask(255, 255, 255, 0);
+      IPAddress dns(192, 168, 50, 1);
+      WiFi.config(staticIp, gwIp, mask, dns);
+    }
+    Serial.printf("[WIFI] Connecting to %s...\n", cfg_ssid);
     WiFi.begin(cfg_ssid, cfg_pass);
-    unsigned long startConn = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - startConn < 15000)) {
-      delay(250);
-      Serial.print(".");
-    }
-    Serial.println();
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.printf("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-      sendLanDiscoveryBroadcasts();
-    } else {
-      Serial.printf("[WIFI] Initial attempt status: %d, SoftAP active at %s\n", (int)WiFi.status(), WiFi.softAPIP().toString().c_str());
-    }
   }
 
   if (MDNS.begin(HOSTNAME)) {
@@ -1495,7 +1516,18 @@ void handleSerialCLI() {
       strncpy(cfg_ssid, s.c_str(), sizeof(cfg_ssid) - 1);
       strncpy(cfg_pass, p.c_str(), sizeof(cfg_pass) - 1);
       saveConfig();
+      if (strcmp(cfg_ssid, "Sasta_Internet") == 0) {
+        IPAddress staticIp(192, 168, 50, 191);
+        IPAddress gwIp(192, 168, 50, 1);
+        IPAddress mask(255, 255, 255, 0);
+        IPAddress dns(192, 168, 50, 1);
+        WiFi.config(staticIp, gwIp, mask, dns);
+      } else {
+        WiFi.config(0U, 0U, 0U);
+      }
       Serial.printf("Config saved. Connecting to %s...\n", cfg_ssid);
+      WiFi.disconnect();
+      delay(100);
       WiFi.begin(cfg_ssid, cfg_pass);
     }
   } else if (line.startsWith("webhook ")) {

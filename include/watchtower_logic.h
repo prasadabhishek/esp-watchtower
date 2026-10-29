@@ -26,6 +26,20 @@ inline bool buildMagicPacket(const uint8_t mac[6], uint8_t packetOut[102]) {
 }
 
 // --- Outage & Duration Calculation ---
+// --- CSRF Origin Guard ---
+inline bool isAuthorizedOrigin(const char* origin, const char* localIp, const char* apIp, const char* hostname) {
+  if (!origin || strlen(origin) == 0) return true; // Direct non-browser request or curl
+  if (apIp && strlen(apIp) > 0 && strstr(origin, apIp)) return true;
+  if (localIp && strlen(localIp) > 0 && strstr(origin, localIp)) return true;
+  if (strstr(origin, "192.168.4.1")) return true;
+  if (strstr(origin, "127.0.0.1")) return true;
+  if (strstr(origin, "localhost")) return true;
+  if (hostname && strlen(hostname) > 0 && strstr(origin, hostname)) return true;
+  if (strstr(origin, ".local")) return true;
+  if (strstr(origin, ".ts.net")) return true;
+  return false;
+}
+
 // ponytail: Evaluates whether a confirmed ISP downtime is occurring.
 // An outage is ONLY confirmed if the local Wi-Fi router is healthy (gwOk == true),
 // but the WAN (outside internet) is unreachable (wanOk == false).

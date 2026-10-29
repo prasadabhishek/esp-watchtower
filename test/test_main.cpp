@@ -359,6 +359,23 @@ void test_server_side_device_sorting(void) {
   TEST_ASSERT_TRUE(list[0].track_presence);
 }
 
+void test_csrf_origin_authorization(void) {
+  // SoftAP IP must always be authorized
+  TEST_ASSERT_TRUE(isAuthorizedOrigin("http://192.168.4.1", "192.168.50.191", "192.168.4.1", "watchtower"));
+  // Local station IP must be authorized
+  TEST_ASSERT_TRUE(isAuthorizedOrigin("http://192.168.50.191", "192.168.50.191", "192.168.4.1", "watchtower"));
+  // Hostname (.local) must be authorized
+  TEST_ASSERT_TRUE(isAuthorizedOrigin("http://watchtower.local", "192.168.50.191", "192.168.4.1", "watchtower"));
+  // Tailscale domain must be authorized
+  TEST_ASSERT_TRUE(isAuthorizedOrigin("https://mac.tail3098b2.ts.net", "192.168.50.191", "192.168.4.1", "watchtower"));
+  // Empty origin (curl / postman) must be authorized
+  TEST_ASSERT_TRUE(isAuthorizedOrigin(NULL, "192.168.50.191", "192.168.4.1", "watchtower"));
+  TEST_ASSERT_TRUE(isAuthorizedOrigin("", "192.168.50.191", "192.168.4.1", "watchtower"));
+  // Malicious third-party origin must be BLOCKED
+  TEST_ASSERT_FALSE(isAuthorizedOrigin("https://evil-hacker.com", "192.168.50.191", "192.168.4.1", "watchtower"));
+  TEST_ASSERT_FALSE(isAuthorizedOrigin("http://phishing-site.xyz", "192.168.50.191", "192.168.4.1", "watchtower"));
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_mac_parser_colon);
@@ -379,5 +396,6 @@ int main(int argc, char **argv) {
   RUN_TEST(test_mqtt_telemetry_packets);
   RUN_TEST(test_device_presence_configuration);
   RUN_TEST(test_server_side_device_sorting);
+  RUN_TEST(test_csrf_origin_authorization);
   return UNITY_END();
 }
