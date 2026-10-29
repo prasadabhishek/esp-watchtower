@@ -38,6 +38,8 @@ WiFiServer rtspServer(554);
 WiFiClient activeTelnetClient;
 WiFiUDP udp;
 WiFiUDP ntpUdp;
+WiFiEventHandler wifiDisconnectHandler;
+WiFiEventHandler wifiConnectHandler;
 
 // Timers
 bool alertActive = false;
@@ -55,6 +57,43 @@ char cfg_webhook[160] = "";
 char cfg_last_wol[18] = "";
 char cfg_mqtt_host[40] = "";
 uint32_t cfg_outage_threshold_sec = 300; // Default 5 minutes (300 seconds)
+
+// Notification filter preferences
+bool cfg_notify_stranger = true;
+bool cfg_notify_presence = true;
+bool cfg_notify_outage = true;
+bool cfg_notify_traps = true;
+bool cfg_notify_freeze = true;
+
+// Verified ISP Outage History (Last 8 confirmed outages)
+#define MAX_OUTAGE_HISTORY 8
+IspOutageRecord outageHistory[MAX_OUTAGE_HISTORY];
+uint8_t outageHistoryCount = 0;
+
+void recordOutageStart(uint32_t startSec) {
+  if (outageHistoryCount < MAX_OUTAGE_HISTORY) {
+    outageHistory[outageHistoryCount].id = outageHistoryCount + 1;
+    outageHistory[outageHistoryCount].start_sec = startSec;
+    outageHistory[outageHistoryCount].duration_sec = 0;
+    outageHistory[outageHistoryCount].is_active = true;
+    outageHistoryCount++;
+  } else {
+    for (int i = 0; i < MAX_OUTAGE_HISTORY - 1; i++) {
+      outageHistory[i] = outageHistory[i + 1];
+    }
+    outageHistory[MAX_OUTAGE_HISTORY - 1].id = metrics.total_outages;
+    outageHistory[MAX_OUTAGE_HISTORY - 1].start_sec = startSec;
+    outageHistory[MAX_OUTAGE_HISTORY - 1].duration_sec = 0;
+    outageHistory[MAX_OUTAGE_HISTORY - 1].is_active = true;
+  }
+}
+
+void recordOutageEnd(uint32_t durationSec) {
+  if (outageHistoryCount > 0) {
+    outageHistory[outageHistoryCount - 1].duration_sec = durationSec;
+    outageHistory[outageHistoryCount - 1].is_active = false;
+  }
+}
 
 // Feature #7 (DNS Probe), #8 (Micro-NTP), #9 (WoL Watchdog), #10 (MQTT Telemetry) State
 int dnsRouterMs = -1;
@@ -117,6 +156,13 @@ void dispatchRawDiscord(const String& rawContent) {
 void dispatchWebhook(const char* type, const String& msg, const char* severity) {
   if (strlen(cfg_webhook) == 0 || WiFi.status() != WL_CONNECTED) return;
   
+  // Configurable notification filtering
+  if (strcmp(type, "STRANGER") == 0 && !cfg_notify_stranger) return;
+  if ((strcmp(type, "PRESENCE") == 0 || strcmp(type, "PRESENCE_IN") == 0 || strcmp(type, "PRESENCE_OUT") == 0) && !cfg_notify_presence) return;
+  if (strcmp(type, "OUTAGE") == 0 && !cfg_notify_outage) return;
+  if (strcmp(type, "HONEYPOT") == 0 && !cfg_notify_traps) return;
+  if (strcmp(type, "FREEZE") == 0 && !cfg_notify_freeze) return;
+
   String label = "SECURITY ALERT";
   String emoji = "🚨";
   if (strcmp(type, "HONEYPOT") == 0) {
@@ -233,6 +279,11 @@ void loadConfig() {
   if (doc["wol"].is<const char*>()) strncpy(cfg_last_wol, doc["wol"], sizeof(cfg_last_wol) - 1);
   if (doc["mqtt"].is<const char*>()) strncpy(cfg_mqtt_host, doc["mqtt"], sizeof(cfg_mqtt_host) - 1);
   if (doc["outage_threshold"].is<uint32_t>()) cfg_outage_threshold_sec = doc["outage_threshold"].as<uint32_t>();
+  if (doc["notify_stranger"].is<bool>()) cfg_notify_stranger = doc["notify_stranger"].as<bool>();
+  if (doc["notify_presence"].is<bool>()) cfg_notify_presence = doc["notify_presence"].as<bool>();
+  if (doc["notify_outage"].is<bool>()) cfg_notify_outage = doc["notify_outage"].as<bool>();
+  if (doc["notify_traps"].is<bool>()) cfg_notify_traps = doc["notify_traps"].as<bool>();
+  if (doc["notify_freeze"].is<bool>()) cfg_notify_freeze = doc["notify_freeze"].as<bool>();
 }
 
 void saveConfig() {
@@ -245,6 +296,11 @@ void saveConfig() {
   doc["wol"] = cfg_last_wol;
   doc["mqtt"] = cfg_mqtt_host;
   doc["outage_threshold"] = cfg_outage_threshold_sec;
+  doc["notify_stranger"] = cfg_notify_stranger;
+  doc["notify_presence"] = cfg_notify_presence;
+  doc["notify_outage"] = cfg_notify_outage;
+  doc["notify_traps"] = cfg_notify_traps;
+  doc["notify_freeze"] = cfg_notify_freeze;
   serializeJson(doc, f);
   f.close();
 }
@@ -255,13 +311,14 @@ void saveVipList() {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   for (uint8_t i = 0; i < lanDeviceCount; i++) {
-    if (lanDevices[i].is_vip || (strlen(lanDevices[i].name) > 0 && strncmp(lanDevices[i].name, "Device ", 7) != 0)) {
+    if (lanDevices[i].is_vip || lanDevices[i].track_presence || (strlen(lanDevices[i].name) > 0 && strncmp(lanDevices[i].name, "Device ", 7) != 0)) {
       JsonObject obj = arr.add<JsonObject>();
       char ipStr[16];
       ipToString(lanDevices[i].ip, ipStr, sizeof(ipStr));
       obj["ip"] = ipStr;
       obj["name"] = lanDevices[i].name;
       obj["vip"] = lanDevices[i].is_vip;
+      obj["presence"] = lanDevices[i].track_presence;
     }
   }
   serializeJson(doc, f);
@@ -281,6 +338,7 @@ void loadVipList() {
     const char* ipStr = obj["ip"];
     const char* nameStr = obj["name"];
     bool isVip = obj["vip"] | false;
+    bool trackPres = obj["presence"] | false;
     uint8_t ip[4];
     if (ipStr && parseIpAddress(ipStr, ip)) {
       bool cameOnline = false, isNew = false;
@@ -288,6 +346,7 @@ void loadVipList() {
       int idx = findDevice(lanDevices, lanDeviceCount, ip);
       if (idx >= 0) {
         lanDevices[idx].is_vip = isVip;
+        lanDevices[idx].track_presence = trackPres;
         if (nameStr && strlen(nameStr) > 0) {
           strncpy(lanDevices[idx].name, nameStr, sizeof(lanDevices[idx].name) - 1);
           lanDevices[idx].name[sizeof(lanDevices[idx].name) - 1] = '\0';
@@ -429,12 +488,114 @@ inline bool isAuthorizedPost() {
   return true;
 }
 
+void handleRoot() {
+  String sortKey = server.arg("sort");
+  if (sortKey.length() == 0) sortKey = "vip";
+  String order = server.arg("order");
+  bool desc = (order == "desc");
+
+  String flt = server.arg("flt");
+  bool filterVip = (flt == "vip");
+
+  LanDevice sortedList[MAX_LAN_DEVICES];
+  uint8_t count = lanDeviceCount;
+  memcpy(sortedList, lanDevices, count * sizeof(LanDevice));
+  sortDeviceList(sortedList, count, sortKey.c_str(), desc);
+
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+
+  server.sendContent_P(HTML_PAGE_HEAD);
+
+  // 1. Render Outages Table (Server-side rendered, NO JS)
+  if (outageHistoryCount == 0) {
+    server.sendContent(PSTR("<tr><td colspan='5' style='color:var(--dim);text-align:center;padding:12px'>✅ No confirmed ISP outages recorded. Local router and WAN have remained connected.</td></tr>"));
+  } else {
+    char outBuf[320];
+    uint32_t nowSec = millis() / 1000;
+    for (int i = (int)outageHistoryCount - 1; i >= 0; i--) {
+      uint32_t ago = (nowSec >= outageHistory[i].start_sec) ? (nowSec - outageHistory[i].start_sec) : 0;
+      uint32_t dur = outageHistory[i].duration_sec;
+      bool act = outageHistory[i].is_active;
+      snprintf(outBuf, sizeof(outBuf),
+        "<tr><td><b>#%u</b></td><td>%us ago</td><td>%um %us</td><td><span class='bdg %s'>%s</span></td><td><span style='color:var(--grn)'>Confirmed ISP Failure (Router was Online)</span></td></tr>",
+        outageHistory[i].id, ago, dur / 60, dur % 60,
+        act ? "off" : "on", act ? "🔴 ONGOING" : "✅ RESTORED");
+      server.sendContent(outBuf);
+    }
+  }
+
+  // 2. Render Device Header with Sortable Links (100% C++ server-side, NO JAVASCRIPTS)
+  server.sendContent_P(HTML_DEV_HEADER);
+
+  auto makeSortTh = [&](const char* key, const char* label, const char* title) {
+    bool isCur = (sortKey == key);
+    String nextOrder = (isCur && !desc) ? "desc" : "asc";
+    String arrow = isCur ? (desc ? " ▼" : " ▲") : " ↕";
+    String filterArg = filterVip ? "&flt=vip" : "";
+    String th = "<th class='eli' title='" + String(title) + "'><a href='/?sort=" + String(key) + "&order=" + nextOrder + filterArg + "#sec-devices'>" + String(label) + arrow + "</a></th>";
+    server.sendContent(th);
+  };
+
+  makeSortTh("vip", "STAR", "Sort by Starred VIP");
+  makeSortTh("presence", "PRESENCE", "Sort by Presence Tracking (Arrival/Departure)");
+  makeSortTh("ip", "IP ADDRESS", "Sort by IP Address");
+  makeSortTh("vendor", "BRAND / TYPE", "Sort by Hardware Manufacturer");
+  makeSortTh("name", "DEVICE NAME", "Sort by Device Name");
+  makeSortTh("latency", "RESPONSE", "Sort by Ping Latency");
+  makeSortTh("seen", "LAST SEEN", "Sort by Last Seen Time");
+  makeSortTh("status", "STATUS", "Sort by Online / Offline Status");
+  server.sendContent(PSTR("<th>WAKE UP</th>"));
+
+  server.sendContent_P(HTML_PAGE_FOOT);
+
+  // 3. Render Device Rows (Server-side rendered, NO JS)
+  char rowBuf[768];
+  uint32_t nowSec = millis() / 1000;
+  for (uint8_t i = 0; i < count; i++) {
+    if (filterVip && !sortedList[i].is_vip) continue;
+
+    char ipStr[16], macStr[18];
+    ipToString(sortedList[i].ip, ipStr, sizeof(ipStr));
+    macToString(sortedList[i].mac, macStr, sizeof(macStr));
+    bool isZeroMac = (sortedList[i].mac[0] == 0 && sortedList[i].mac[1] == 0 && sortedList[i].mac[2] == 0 &&
+                      sortedList[i].mac[3] == 0 && sortedList[i].mac[4] == 0 && sortedList[i].mac[5] == 0);
+    bool isPriv = isRandomizedMac(sortedList[i].mac);
+    uint32_t seenAgo = (nowSec >= sortedList[i].last_seen_sec) ? (nowSec - sortedList[i].last_seen_sec) : 0;
+
+    snprintf(rowBuf, sizeof(rowBuf),
+      "<tr>"
+      "<td><button class='btn' onclick=\"post('/api/vip/toggle',{ip:'%s',vip:%s})\">%s</button></td>"
+      "<td><button class='btn %s' onclick=\"post('/api/device/presence',{ip:'%s',presence:%s})\">%s</button></td>"
+      "<td><b>%s</b></td>"
+      "<td>%s <span style='color:var(--cyn)'>[%s]</span>%s</td>"
+      "<td style='cursor:pointer' onclick=\"const n=prompt('Rename:', '%s');if(n)post('/api/device/rename',{ip:'%s',name:n})\">%s ✏️%s</td>"
+      "<td>%s</td>"
+      "<td>%us ago</td>"
+      "<td><span class='bdg %s'>%s</span></td>"
+      "<td>%s</td>"
+      "</tr>",
+      ipStr, sortedList[i].is_vip ? "false" : "true", sortedList[i].is_vip ? "★" : "☆",
+      sortedList[i].track_presence ? "btn-p" : "", ipStr, sortedList[i].track_presence ? "false" : "true", sortedList[i].track_presence ? "🏠 Tracking" : "⚪ Off",
+      ipStr,
+      macStr, sortedList[i].vendor, isPriv ? " <span class='bdg vip'>Private MAC</span>" : "",
+      sortedList[i].name, ipStr, sortedList[i].name, sortedList[i].is_vip ? " <span class='bdg vip'>VIP</span>" : "",
+      sortedList[i].is_online && sortedList[i].latency_ms >= 0 ? (String(sortedList[i].latency_ms) + " ms").c_str() : "--",
+      seenAgo,
+      sortedList[i].is_online ? "on" : "off", sortedList[i].is_online ? "ONLINE" : "OFFLINE",
+      isZeroMac ? "<span style='color:var(--dim)'>--</span>" : (String("<button class='btn' onclick=\"post('/api/wol',{mac:'") + macStr + "'})\">⚡Turn On</button>").c_str()
+    );
+    server.sendContent(rowBuf);
+  }
+
+  server.sendContent_P(HTML_PAGE_END);
+  server.sendContent(""); // End chunked response
+}
+
 void setupDashboardServer() {
   server.collectHeaders("Origin");
 
-  server.on("/", HTTP_GET, []() {
-    server.send_P(200, "text/html", INDEX_HTML);
-  });
+  server.on("/", HTTP_GET, handleRoot);
 
   server.on("/api/status", HTTP_GET, []() {
     JsonDocument doc;
@@ -490,6 +651,13 @@ void setupDashboardServer() {
     doc["mqtt_sent"] = mqttPublishedCount;
     doc["mqtt_host"] = cfg_mqtt_host;
 
+    // Notification Preferences
+    doc["notify_stranger"] = cfg_notify_stranger;
+    doc["notify_presence"] = cfg_notify_presence;
+    doc["notify_outage"] = cfg_notify_outage;
+    doc["notify_traps"] = cfg_notify_traps;
+    doc["notify_freeze"] = cfg_notify_freeze;
+
     JsonArray hist = doc["ping_history"].to<JsonArray>();
     for (int i = 0; i < PING_HISTORY_LEN; i++) {
       int idx = (pingHistoryIdx + i) % PING_HISTORY_LEN;
@@ -516,6 +684,7 @@ void setupDashboardServer() {
       d["name"] = lanDevices[i].name;
       d["vendor"] = lanDevices[i].vendor;
       d["vip"] = lanDevices[i].is_vip;
+      d["presence"] = lanDevices[i].track_presence;
       d["online"] = lanDevices[i].is_online;
       d["latency"] = lanDevices[i].latency_ms;
       d["last_seen_sec"] = (nowSec >= lanDevices[i].last_seen_sec) ? (nowSec - lanDevices[i].last_seen_sec) : 0;
@@ -545,6 +714,45 @@ void setupDashboardServer() {
       }
     }
     sendJsonError();
+  });
+
+  server.on("/api/device/presence", HTTP_POST, []() {
+    if (!isAuthorizedPost()) { sendJsonError(403); return; }
+    if (server.hasArg("plain")) {
+      JsonDocument doc;
+      deserializeJson(doc, server.arg("plain"));
+      const char* ipStr = doc["ip"];
+      bool presence = doc["presence"] | false;
+      uint8_t ip[4];
+      if (ipStr && parseIpAddress(ipStr, ip)) {
+        int idx = findDevice(lanDevices, lanDeviceCount, ip);
+        if (idx >= 0) {
+          lanDevices[idx].track_presence = presence;
+          if (presence) lanDevices[idx].is_vip = true;
+          saveVipList();
+          addLog("PRESENCE", String("Presence tracking ") + (presence ? "ENABLED" : "DISABLED") + " for " + ipStr, "info");
+          sendJsonOk();
+          return;
+        }
+      }
+    }
+    sendJsonError();
+  });
+
+  server.on("/api/outages", HTTP_GET, []() {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    uint32_t nowSec = millis() / 1000;
+    for (uint8_t i = 0; i < outageHistoryCount; i++) {
+      JsonObject item = arr.add<JsonObject>();
+      item["id"] = outageHistory[i].id;
+      item["start_sec_ago"] = (nowSec >= outageHistory[i].start_sec) ? (nowSec - outageHistory[i].start_sec) : 0;
+      item["duration_sec"] = outageHistory[i].duration_sec;
+      item["active"] = outageHistory[i].is_active;
+    }
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
   });
 
   server.on("/api/device/rename", HTTP_POST, []() {
@@ -698,11 +906,16 @@ void setupDashboardServer() {
       if (doc["outage_threshold"].is<uint32_t>()) {
         cfg_outage_threshold_sec = doc["outage_threshold"].as<uint32_t>();
         if (cfg_outage_threshold_sec < 10) cfg_outage_threshold_sec = 10;
-        saveConfig();
         addLog("CONFIG", String("Outage threshold updated: Alert if down > ") + String(cfg_outage_threshold_sec / 60) + "m (" + String(cfg_outage_threshold_sec) + "s)", "info");
-        sendJsonOk();
-        return;
       }
+      if (doc["notify_stranger"].is<bool>()) cfg_notify_stranger = doc["notify_stranger"].as<bool>();
+      if (doc["notify_presence"].is<bool>()) cfg_notify_presence = doc["notify_presence"].as<bool>();
+      if (doc["notify_outage"].is<bool>()) cfg_notify_outage = doc["notify_outage"].as<bool>();
+      if (doc["notify_traps"].is<bool>()) cfg_notify_traps = doc["notify_traps"].as<bool>();
+      if (doc["notify_freeze"].is<bool>()) cfg_notify_freeze = doc["notify_freeze"].as<bool>();
+      saveConfig();
+      sendJsonOk();
+      return;
     }
     sendJsonError();
   });
@@ -821,9 +1034,13 @@ void runNetworkWatchdog() {
     metrics.internet_ping_ms = -1;
     metrics.gateway_ping_ms = -1;
     static unsigned long lastReconnect = 0;
-    if (strlen(cfg_ssid) > 0 && millis() - lastReconnect > 15000) {
+    if (lastReconnect == 0) lastReconnect = millis();
+    if (strlen(cfg_ssid) > 0 && millis() - lastReconnect > 40000) {
       lastReconnect = millis();
-      WiFi.reconnect();
+      Serial.printf("[WIFI] Re-associating with %s (status=%d)...\n", cfg_ssid, (int)WiFi.status());
+      WiFi.disconnect();
+      delay(100);
+      WiFi.begin(cfg_ssid, cfg_pass);
     }
     return;
   }
@@ -833,6 +1050,10 @@ void runNetworkWatchdog() {
   metrics.gateway_ping_ms = gw_ok ? Ping.averageTime() : -1;
 
   bool wan_ok = Ping.ping(IPAddress(1, 1, 1, 1), 1);
+  if (!wan_ok) {
+    // Secondary check to avoid false alarms
+    wan_ok = Ping.ping(IPAddress(8, 8, 8, 8), 1);
+  }
   metrics.internet_ping_ms = wan_ok ? Ping.averageTime() : -1;
 
   if (metrics.total_pings % 3 == 1) {
@@ -853,15 +1074,18 @@ void runNetworkWatchdog() {
   bool shouldAlertRestored = false;
   uint32_t totalDurationSec = 0;
 
-  if (evaluateOutageCondition(wan_ok, millis(), outageStartMs, cfg_outage_threshold_sec,
+  // STRICT ISP DOWNTIME EVALUATION: Only counts if local router is healthy but WAN is dead!
+  if (evaluateOutageCondition(gw_ok, wan_ok, millis(), outageStartMs, cfg_outage_threshold_sec,
                               metrics.is_internet_down, shouldAlertDown, shouldAlertRestored, totalDurationSec)) {
     if (shouldAlertDown) {
       metrics.total_outages++;
-      addLog("OUTAGE", "Internet down for " + String(cfg_outage_threshold_sec / 60) + "+ mins (confirmed outage)", "danger");
+      recordOutageStart(millis() / 1000);
+      addLog("OUTAGE", "Confirmed ISP outage: outside internet dead while router is alive", "danger");
       triggerStrobe();
     } else if (shouldAlertRestored) {
       metrics.last_outage_duration = totalDurationSec;
-      addLog("OUTAGE", "Internet restored after " + String(totalDurationSec / 60) + "m " + String(totalDurationSec % 60) + "s", "success");
+      recordOutageEnd(totalDurationSec);
+      addLog("OUTAGE", "ISP service restored after " + String(totalDurationSec / 60) + "m " + String(totalDurationSec % 60) + "s", "success");
     }
   }
 }
@@ -981,10 +1205,15 @@ void handleLanRadar() {
         if (cameOnline) {
           String msg = String("Arrival detected: ") + lanDevices[i].name + " (" + ipStr + ") connected";
           addLog("PRESENCE", msg, "success");
-          dispatchWebhook("PRESENCE_IN", msg, "info");
+          if (lanDevices[i].track_presence) {
+            dispatchWebhook("PRESENCE_IN", msg, "info");
+          }
         } else if (wentOffline) {
           String msg = String("Departure detected: ") + lanDevices[i].name + " (" + ipStr + ") disconnected";
           addLog("PRESENCE", msg, "warn");
+          if (lanDevices[i].track_presence) {
+            dispatchWebhook("PRESENCE_OUT", msg, "warn");
+          }
 
           // Silent Server / NAS Freeze Sentinel (Auto-WoL)
           bool hasMac = (lanDevices[i].mac[0] != 0 || lanDevices[i].mac[1] != 0 || lanDevices[i].mac[2] != 0 ||
@@ -1070,14 +1299,23 @@ void setup() {
 
   for (int i = 0; i < PING_HISTORY_LEN; i++) pingHistory[i] = 15;
 
+  wifiDisconnectHandler = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected& evt) {
+    Serial.printf("[WIFI EVENT] Disconnected! Reason: %d, SSID: %s\n", evt.reason, evt.ssid.c_str());
+  });
+  wifiConnectHandler = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP& evt) {
+    Serial.printf("[WIFI EVENT] Connected! IP: %s, GW: %s\n", evt.ip.toString().c_str(), evt.gw.toString().c_str());
+  });
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS);
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  WiFi.setAutoReconnect(true);
+
   if (strlen(cfg_ssid) > 0) {
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleepMode(WIFI_NONE_SLEEP);
-    WiFi.setAutoReconnect(true);
-    Serial.printf("[WIFI] Connecting to %s in Station Mode...\n", cfg_ssid);
+    Serial.printf("[WIFI] Connecting to %s (pass len %zu)...\n", cfg_ssid, strlen(cfg_pass));
     WiFi.begin(cfg_ssid, cfg_pass);
     unsigned long startConn = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - startConn < 45000)) {
+    while (WiFi.status() != WL_CONNECTED && (millis() - startConn < 15000)) {
       delay(250);
       Serial.print(".");
     }
@@ -1086,11 +1324,8 @@ void setup() {
       Serial.printf("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
       sendLanDiscoveryBroadcasts();
     } else {
-      Serial.println("[WIFI] Still connecting to AP in background...");
+      Serial.printf("[WIFI] Initial attempt status: %d, SoftAP active at %s\n", (int)WiFi.status(), WiFi.softAPIP().toString().c_str());
     }
-  } else {
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS);
   }
 
   if (MDNS.begin(HOSTNAME)) {
@@ -1113,6 +1348,7 @@ void setup() {
   digitalWrite(LED_BUILTIN, LOW);
   delay(100);
   digitalWrite(LED_BUILTIN, HIGH);
+  lastWatchdogRun = millis();
 }
 
 // --- Main Loop ---
@@ -1246,8 +1482,8 @@ void handleSerialCLI() {
       Serial.printf("  %s (%d dBm, ch %d, enc %d)\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i), WiFi.encryptionType(i));
     }
   } else if (line.equalsIgnoreCase("printconfig")) {
-    Serial.printf("Config: SSID='%s' PassLen=%zu WebhookLen=%zu IP=%s Status=%d\n",
-                  cfg_ssid, strlen(cfg_pass), strlen(cfg_webhook), WiFi.localIP().toString().c_str(), (int)WiFi.status());
+    Serial.printf("Config: SSID='%s' Pass='%s' WebhookLen=%zu IP=%s Status=%d\n",
+                  cfg_ssid, cfg_pass, strlen(cfg_webhook), WiFi.localIP().toString().c_str(), (int)WiFi.status());
   } else if (line.startsWith("wifi ")) {
     int firstSpace = line.indexOf(' ');
     int secondSpace = line.indexOf(' ', firstSpace + 1);

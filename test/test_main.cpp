@@ -139,41 +139,70 @@ void test_outage_configurable_threshold(void) {
   bool shouldAlertRestored = false;
   uint32_t totalDurationSec = 0;
 
-  // Intermittent failure at t=10s: should NOT alert
-  evaluateOutageCondition(false, 10000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  // Case 1: Local Wi-Fi dropped (gwOk = false, wanOk = false). Should NOT be counted as ISP downtime!
+  evaluateOutageCondition(false, false, 10000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  TEST_ASSERT_FALSE(shouldAlertDown);
+  TEST_ASSERT_FALSE(isCurrentlyDown);
+  TEST_ASSERT_EQUAL_UINT32(0, outageStartMs);
+
+  // Case 2: Intermittent WAN blip at t=10s (gwOk = true, wanOk = false): should NOT alert prematurely
+  evaluateOutageCondition(true, false, 10000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
   TEST_ASSERT_FALSE(shouldAlertDown);
   TEST_ASSERT_FALSE(isCurrentlyDown);
 
   // Recovery at t=20s: resets intermittent start
-  evaluateOutageCondition(true, 20000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  evaluateOutageCondition(true, true, 20000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
   TEST_ASSERT_EQUAL_UINT32(0, outageStartMs);
   TEST_ASSERT_FALSE(isCurrentlyDown);
 
-  // Real outage begins at t=30s
-  evaluateOutageCondition(false, 30000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  // Real confirmed ISP outage begins at t=30s (Router alive, WAN dead)
+  evaluateOutageCondition(true, false, 30000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
   TEST_ASSERT_EQUAL_UINT32(30000, outageStartMs);
   TEST_ASSERT_FALSE(shouldAlertDown);
 
   // t=200s (under 300s): still no alert
-  evaluateOutageCondition(false, 200000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  evaluateOutageCondition(true, false, 200000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
   TEST_ASSERT_FALSE(shouldAlertDown);
   TEST_ASSERT_FALSE(isCurrentlyDown);
 
-  // t=330s (threshold reached 300s since t=30s): ALERTS DOWN
-  evaluateOutageCondition(false, 330000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  // t=330s (threshold reached 300s since t=30s): CONFIRMED ISP OUTAGE ALERTS DOWN
+  evaluateOutageCondition(true, false, 330000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
   TEST_ASSERT_TRUE(shouldAlertDown);
   TEST_ASSERT_TRUE(isCurrentlyDown);
 
   // t=400s (still down): does not re-alert down
-  evaluateOutageCondition(false, 400000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  evaluateOutageCondition(true, false, 400000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
   TEST_ASSERT_FALSE(shouldAlertDown);
   TEST_ASSERT_TRUE(isCurrentlyDown);
 
   // t=630s: Internet RESTORED (total downtime 600 seconds = 10 minutes)
-  evaluateOutageCondition(true, 630000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  evaluateOutageCondition(true, true, 630000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
   TEST_ASSERT_TRUE(shouldAlertRestored);
   TEST_ASSERT_FALSE(isCurrentlyDown);
   TEST_ASSERT_EQUAL_UINT32(600, totalDurationSec);
+}
+
+void test_device_presence_configuration(void) {
+  LanDevice list[5];
+  uint8_t count = 0;
+  uint8_t ip[4] = {192, 168, 50, 42};
+  uint8_t mac[6] = {0xaa, 0x57, 0x9c, 0x11, 0x22, 0x33};
+  bool cameOnline = false, isNew = false;
+
+  upsertDeviceRecord(list, count, 5, ip, mac, 10, 100, cameOnline, isNew);
+  TEST_ASSERT_EQUAL_UINT8(1, count);
+  // Default presence tracking is false
+  TEST_ASSERT_FALSE(list[0].track_presence);
+
+  // Configure presence tracking for this family phone
+  list[0].is_vip = true;
+  list[0].track_presence = true;
+  TEST_ASSERT_TRUE(list[0].track_presence);
+
+  char out[128];
+  bool ok = formatDowntimeLogEntry(out, sizeof(out), 1, 120, 600, false);
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_NOT_NULL(strstr(out, "10m 0s downtime"));
 }
 
 void test_netbios_parser(void) {
@@ -288,6 +317,48 @@ void test_mqtt_telemetry_packets(void) {
   TEST_ASSERT_EQUAL_HEX8(0x30, buf[0]); // PUBLISH
 }
 
+void test_server_side_device_sorting(void) {
+  LanDevice list[3];
+  memset(list, 0, sizeof(list));
+
+  // Device 0: IP .100, Name "Zebra Camera", Latency 45ms, VIP=false, Presence=false
+  list[0].ip[0]=192; list[0].ip[1]=168; list[0].ip[2]=50; list[0].ip[3]=100;
+  strcpy(list[0].name, "Zebra Camera");
+  list[0].latency_ms = 45; list[0].is_online = true;
+
+  // Device 1: IP .10, Name "Apple MacBook", Latency 2ms, VIP=true, Presence=true
+  list[1].ip[0]=192; list[1].ip[1]=168; list[1].ip[2]=50; list[1].ip[3]=10;
+  strcpy(list[1].name, "Apple MacBook");
+  list[1].latency_ms = 2; list[1].is_online = true; list[1].is_vip = true; list[1].track_presence = true;
+
+  // Device 2: IP .50, Name "Home Server", Latency 15ms, VIP=true, Presence=false
+  list[2].ip[0]=192; list[2].ip[1]=168; list[2].ip[2]=50; list[2].ip[3]=50;
+  strcpy(list[2].name, "Home Server");
+  list[2].latency_ms = 15; list[2].is_online = true; list[2].is_vip = true;
+
+  // 1. Sort by IP ascending -> .10, .50, .100
+  sortDeviceList(list, 3, "ip", false);
+  TEST_ASSERT_EQUAL_UINT8(10, list[0].ip[3]);
+  TEST_ASSERT_EQUAL_UINT8(50, list[1].ip[3]);
+  TEST_ASSERT_EQUAL_UINT8(100, list[2].ip[3]);
+
+  // 2. Sort by Name ascending -> "Apple MacBook", "Home Server", "Zebra Camera"
+  sortDeviceList(list, 3, "name", false);
+  TEST_ASSERT_EQUAL_STRING("Apple MacBook", list[0].name);
+  TEST_ASSERT_EQUAL_STRING("Home Server", list[1].name);
+  TEST_ASSERT_EQUAL_STRING("Zebra Camera", list[2].name);
+
+  // 3. Sort by Latency ascending -> 2ms, 15ms, 45ms
+  sortDeviceList(list, 3, "latency", false);
+  TEST_ASSERT_EQUAL_INT(2, list[0].latency_ms);
+  TEST_ASSERT_EQUAL_INT(15, list[1].latency_ms);
+  TEST_ASSERT_EQUAL_INT(45, list[2].latency_ms);
+
+  // 4. Sort by Presence descending (Presence=true first)
+  sortDeviceList(list, 3, "presence", true);
+  TEST_ASSERT_TRUE(list[0].track_presence);
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_mac_parser_colon);
@@ -306,5 +377,7 @@ int main(int argc, char **argv) {
   RUN_TEST(test_dns_probe_packets);
   RUN_TEST(test_micro_ntp_server);
   RUN_TEST(test_mqtt_telemetry_packets);
+  RUN_TEST(test_device_presence_configuration);
+  RUN_TEST(test_server_side_device_sorting);
   return UNITY_END();
 }

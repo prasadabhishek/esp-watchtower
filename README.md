@@ -1,232 +1,193 @@
-# 🛡️ ESP-Watchtower
+# ESP-Watchtower
 
-> **An autonomous, always-on Home Network Sentinel, Canary Honeypot & ISP Blame Engine for under $4.**  
-> Built for the ESP8266 (NodeMCU / D1 Mini) with zero recurring subscriptions and a strict **Zero-JS Ponytail Architecture**.
+An autonomous, always-on home network sentinel, canary decoy engine, and diagnostic monitor running on the ESP8266 microcontroller ($3–$4 hardware). Designed with zero cloud subscriptions, zero external telemetry, and a strict **zero-JavaScript** server-rendered architecture.
 
 ---
 
 <p align="center">
-  <a href="https://github.com/prasadabhishek/esp-watchtower/raw/main/docs/assets/brag.mp4">
-    <img src="docs/assets/demo.gif" alt="ESP-Watchtower 19-Second Tour" width="100%">
+  <a href="docs/assets/brag.mp4">
+    <img src="docs/assets/demo.gif" alt="ESP-Watchtower Overview" width="100%">
   </a>
 </p>
 <p align="center">
-  🎬 <em>19-second video tour. <strong><a href="https://github.com/prasadabhishek/esp-watchtower/raw/main/docs/assets/brag.mp4">Click to watch/download full 1080p video with audio (brag.mp4)</a></strong>.</em>
+  <em>18-second video walkthrough. <strong><a href="docs/assets/brag.mp4">Download / View 1080p Video (brag.mp4)</a></strong>.</em>
 </p>
 
 ---
 
-## ⚡ Why ESP-Watchtower? (The Ponytail Philosophy)
+## System Architecture
 
-Most home network monitoring tools are heavy, bloated, and expensive:
-- They require dedicated Raspberry Pis ($60–$100), heavy Docker containers, Node.js runtimes, or monthly SaaS subscriptions.
-- If a server crashes or your home network drops, the monitor goes down with it.
+Most home network monitors require dedicated single-board computers (Raspberry Pi), container runtimes, or monthly SaaS subscriptions. When power cuts out or your server crashes, the monitor fails alongside the network.
 
-**ESP-Watchtower takes the opposite approach:**
-It turns a **$3 ESP8266EX microcontroller** (80MHz/160MHz Tensilica L106, 80KB RAM, 4MB Flash) into a dedicated, unkillable, independent network sentinel that consumes less than 0.5 Watts.
-
-### Key Architectural Tenets
-1. **Zero JavaScript UI:** The entire 4-tab dashboard is rendered with **100% pure CSS** (`input[type=radio]:checked ~ .pane`). Zero frontend frameworks, zero npm dependencies, zero client-side DOM parsing crashes.
-2. **Deterministic Memory Footprint:** Stack-allocated buffers (48-byte NTP, 102-byte WoL), static ring buffers for logs, and zero dynamic heap fragmentation. Consistently maintains **~29 KB of free heap** (~50% safety margin).
-3. **Line-Rate LwIP Performance:** Native UDP/TCP non-blocking event loops running on bare-metal Arduino Core 3.1.2 with LwIP 2.1.3.
-
----
-
-## 🪤 The 10 Core Capabilities
+ESP-Watchtower runs on bare metal on an **ESP8266EX** (80/160 MHz Tensilica L106, 80 KB RAM, 4 MB Flash) drawing less than 0.5 Watts:
 
 ```
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                                ESP-WATCHTOWER ARCHITECTURE                             │
-├────────────────────────────────┬───────────────────────────────────────────────────────┤
-│ 1. "Who's at Fault?" Meter    │ • Diagnoses Wi-Fi (GW) vs. ISP (WAN) vs. Bufferbloat  │
-│ 2. Stranger Alert (Privacy-OK) │ • Distinguishes IEEE 802 Local MACs from fixed devices│
-│ 3. Passive Family Presence     │ • Tracks VIP phone arrival / departure with zero apps │
-│ 4. SLA Outage Receipt Generator│ • Generates copy-paste billing credit proof for ISPs  │
-│ 5. Silent Server / NAS Sentinel│ • Auto-wakes frozen servers via UDP 9 Magic Packets   │
-│ 6. Triple Canary Honeypot      │ • Port 23 (Telnet), Port 8080 (Web), Port 554 (RTSP)  │
-│ 7. DNS Hijacking & Bench Probe │ • RFC 1035 UDP 53 queries with RFC 5452 16-bit entropy│
-│ 8. Local Micro-NTP Server      │ • RFC 5905 Stratum 2 time sync for offline smart plugs│
-│ 9. Subnet Wake-on-LAN Trigger  │ • L2 broadcast magic packets with all-zero MAC guard  │
-│ 10. Home Assistant MQTT Bridge │ • Native TCP 1883 telemetry export (zero cloud)       │
-└────────────────────────────────┴───────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                        ESP-WATCHTOWER ARCHITECTURE                     │
+├────────────────────────┬───────────────────────────────────────────────┤
+│ Diagnostic Engine      │ • Latency & jitter isolation (Gateway vs WAN) │
+│                        │ • RFC 5452 DNS hijacking & benchmark probe    │
+│                        │ • Confirmed ISP downtime logging (LittleFS)   │
+├────────────────────────┼───────────────────────────────────────────────┤
+│ Intrusion Decoys       │ • Port 23 Telnet honeypot (Linux login decoy) │
+│                        │ • Port 8080 HTTP honeypot (Router admin trap) │
+│                        │ • Port 554 RTSP honeypot (Camera decoy)       │
+├────────────────────────┼───────────────────────────────────────────────┤
+│ LAN Discovery & Radar  │ • L2 ARP table harvesting + NetBIOS queries   │
+│                        │ • Passive family presence tracking            │
+│                        │ • Mobile MAC randomization detection          │
+├────────────────────────┼───────────────────────────────────────────────┤
+│ Local Infrastructure   │ • RFC 5905 Micro-NTP server (UDP 123)         │
+│                        │ • Subnet Wake-on-LAN dispatcher (UDP 9)       │
+│                        │ • Home Assistant MQTT publisher (TCP 1883)    │
+│                        │ • Configurable Discord webhook notifications  │
+└────────────────────────┴───────────────────────────────────────────────┘
 ```
 
-### 1. ⚖️ The "Who's at Fault?" Blame Meter (Wi-Fi vs. ISP vs. Bufferbloat)
-When Zoom freezes or Netflix buffers, users don't know who to blame. Watchtower calculates statistical packet jitter across a 24-point rolling window:
-$$\text{Jitter} = \frac{1}{N-1} \sum_{i=1}^{N-1} |D(i, i-1)|$$
-- **🟢 Crystal Clear:** Gateway < 5 ms, WAN < 30 ms, Jitter < 10 ms.
-- **🔴 ISP Failure:** Gateway nominal, WAN latency spike or 100% packet drop.
-- **🟡 Bufferbloat:** Nominal gateway latency, high WAN latency inflation (>120 ms), and severe jitter (>30 ms).
+### Core Design Principles
 
-### 2. 🔔 Stranger Alert with Mobile MAC Privacy Discrimination
-Alerts your phone via Discord the second an unknown device connects to your Wi-Fi. It checks the IEEE 802 Locally Administered bit (`mac[0] & 0x02`):
-- Modern smartphones (iOS Private Wi-Fi, Android MAC Randomization) are labeled as `[Private Mobile MAC]`, avoiding false alarms.
-- Static hardware interfaces are resolved against internal OUI and NetBIOS tables.
-
-### 3. 🏠 Arrival & Departure Presence Engine (Zero Apps)
-Monitors family VIP devices (e.g. MacBook, iPhone) passively through Wi-Fi ARP state. When someone walks into the driveway and joins Wi-Fi, Watchtower records an immediate **[ARRIVAL]**. If absent for 5+ minutes, it logs **[DEPARTURE]**—without battery-draining GPS tracking apps.
-
-### 4. 🧾 ISP Outage Receipt & Bill Credit Generator
-Tracks WAN drops in LittleFS `/audit.log`. When internet cuts out, Watchtower logs exact timestamps and calculates prorated billing credit reimbursement based on your monthly subscription cost (e.g. `$80/mo` SLA credit claim).
-
-### 5. 🐺 Silent Server / NAS Freeze Sentinel
-Monitors your Synology NAS, Plex server, or homelab PC. If a VIP host fails to answer ICMP pings for 2 consecutive minutes, Watchtower automatically transmits an 802.3 Wake-on-LAN packet to revive it.
-
-### 6. 🪤 Triple Canary Honeypot Decoys
-Arms three canary traps inside your home network:
-- **Door 1 (Port 23 Telnet):** Emulates an Ubuntu Linux terminal. Captures intruder IP, username, and brute-force passwords.
-- **Door 2 (Port 8080 Web):** Serves a fake router gateway login screen. Logs credential stuffing attacks.
-- **Door 3 (Port 554 RTSP):** Mimics an IP security camera stream to trap network scanners sniffing for video feeds.
-
-### 7. 🔍 DNS Hijacking & Benchmark Probe (UDP 53)
-Sends raw RFC 1035 UDP queries to your local router DNS vs Cloudflare (`1.1.1.1`) and Google (`8.8.8.8`). Flags upstream NXDOMAIN ad-injection and measures lookup latency using RFC 5452 cryptographic 16-bit PRNG entropy (`os_random()`).
-
-### 8. ⏱️ Local Micro-NTP Time Server (UDP 123)
-Serves RFC 5905 compliant timestamps on your local network (Stratum 2, LOCL RefID, non-zero root dispersion and delay). Provides accurate clock sync for smart bulbs, Tuya plugs, and IP cameras isolated from the public internet.
-
-### 9. ⚡ Subnet Wake-on-LAN Trigger (UDP 9)
-Broadcasts 102-byte Magic Packets (`6 × 0xFF` followed by 16 repetitions of the target MAC address) with strict zero-MAC filtering to prevent malformed packet flooding.
-
-### 10. 📡 Home Assistant MQTT Telemetry (TCP 1883)
-Publishes real-time intruder hits, WAN uptime, and active device counts directly to your local Home Assistant instance over MQTT.
+1. **Zero Client-Side JavaScript:** The executive dashboard is 100% server-rendered using chunked HTTP streaming and pure CSS. Device table column sorting (`/?sort=...&order=...`) executes entirely on-chip in C++.
+2. **Deterministic Memory Model:** Static buffers (48-byte NTP, 102-byte WoL), circular logging in LittleFS flash, and stack allocation preserve **~30 KB free heap RAM** (~50% safety margin) with zero heap fragmentation.
+3. **Confirmed-Only Downtime Logic:** An ISP outage is logged *strictly* when the local default gateway responds to ICMP ping but upstream WAN endpoints fail (`gw_ok == true && wan_ok == false`). Local Wi-Fi drops or router reboots do not trigger false ISP fault records.
 
 ---
 
-## 🖥️ The 4-Tab Pure-CSS Dashboard
+## Feature Capabilities
 
-The dashboard (`http://<device-ip>/`) is split into 4 tabs rendered with zero JavaScript:
+### 1. Network Latency & Bufferbloat Isolation
+Measures latency to the local default gateway and public WAN resolvers (`1.1.1.1`, `8.8.8.8`) while tracking packet jitter across a 24-point rolling window using the RFC 3550 statistical algorithm:
+$$J = \frac{1}{N-1} \sum_{i=1}^{N-1} |D(i, i-1)|$$
+- **Crystal Clear:** Gateway < 10 ms, WAN < 35 ms, Jitter < 15 ms.
+- **Upstream ISP Outage:** Gateway responsive, WAN 100% loss.
+- **Wi-Fi Congestion / Weak Signal:** Gateway latency elevated (>45 ms).
+- **Bufferbloat / Bandwidth Saturation:** Low gateway latency, high WAN latency inflation (>100 ms), high jitter (>30 ms).
 
-```
-[ Tab 1: 📡 Live Blame Radar ] [ Tab 2: 👥 LAN Devices (28) ] [ Tab 3: 📋 Outage Receipts ] [ Tab 4: ⚙️ Canary & Settings ]
-```
+### 2. Triple Canary Burglar Decoys
+Binds unauthenticated decoy listeners on standard ports to detect unauthorized internal network reconnaissance:
+- **Port 23 (Telnet):** Emulates an Ubuntu Linux terminal. Logs source IP, username, and password attempts.
+- **Port 8080 (HTTP):** Emulates a router web administration portal. Traps credential-stuffing bots.
+- **Port 554 (RTSP):** Mimics an IP security camera stream to flag port scanners sniffing for video feeds.
 
-1. **Tab 1: Live Blame Radar:** Large visual health verdict, real-time Jitter badge, gateway vs. WAN latency gauges, 24-point ping sparkline, and an expandable hardware diagnostics drawer (`Free Heap`, `VCC`, `RSSI`).
-2. **Tab 2: LAN Devices:** Live table of all discovered network devices with vendor resolution, NetBIOS hostnames, Private MAC badges, VIP toggles, and one-click WoL triggers.
-3. **Tab 3: SLA Outage Receipts:** Persistent outage log with interactive dollar-value SLA credit calculator and `.csv` audit export.
-4. **Tab 4: Settings & Canary Decoys:** Wi-Fi credentials manager, Discord webhook configurator, MQTT broker settings, manual DNS benchmark trigger, and canary decoy stats.
+### 3. Confirmed ISP Outage Logger
+Records confirmed upstream downtimes into persistent LittleFS flash storage. Each record includes event ID, start timestamp, outage duration, and verification flags. The minimum duration threshold is configurable (1, 3, 5, or 10 minutes) to filter transient packet loss.
+
+### 4. Connected Devices Radar & Passive Presence
+Harvests the L2 ARP cache and queries NetBIOS names (UDP 137) to track every active client on the subnet:
+- **Presence Tracking:** Tracks arrival and departure events for starred family devices without battery-draining client apps. Presence notifications can be enabled or disabled individually per device.
+- **Mobile Privacy Detection:** Inspects the IEEE 802 Locally Administered bit (`mac[0] & 0x02`) to distinguish randomized mobile addresses (iOS Private Wi-Fi, Android MAC randomization) from physical hardware NICs.
+- **Server-Side Sorting:** Table headers allow instant sorting by IP, Name, Vendor, Latency, Seen Time, and Presence with zero JavaScript.
+
+### 5. DNS Hijacking & Benchmark Probe (RFC 5452 UDP 53)
+Dispatches raw DNS queries directly to the local router resolver versus Cloudflare (`1.1.1.1:53`). Utilizes 16-bit PRNG transaction IDs (`os_random()`) to test for cache poisoning vulnerability and inspects response flags to flag NXDOMAIN ad-injection or search redirection.
+
+### 6. Local Micro-NTP Stratum-2 Time Server (RFC 5905 UDP 123)
+Listens on UDP 123 and serves RFC 5905 compliant timestamps (`LOCL` RefID, Stratum 2, valid root delay and dispersion). Keeps offline smart plugs, Tuya devices, and IP cameras synchronized even during an internet blackout.
+
+### 7. Remote Wake-on-LAN Dispatcher (UDP 9)
+Constructs and broadcasts 102-byte Magic Packets across the subnet. Includes input validation and all-zero MAC guards to prevent packet corruption.
+
+### 8. Home Assistant MQTT Bridge (TCP 1883)
+Publishes real-time telemetry (WAN latency, gateway latency, DNS metrics, intruder trap counts, active device counts) to `homeassistant/sensor/watchtower/state` every 30 seconds.
+
+### 9. Configurable Discord Webhook Alerts
+Supports instant Discord webhook push notifications with granular preference toggles:
+- 🔔 Stranger Alert (New uncataloged devices joining Wi-Fi)
+- 🏠 Family Arrival & Departure
+- ⚠️ Confirmed ISP Outages
+- 🚨 Burglar Trap Decoys Tripped
+- 🐺 Critical Server Freeze / Auto-WoL Dispatched
+
+### 10. Dual-Mode Provisioning (SoftAP + Station)
+Operates simultaneously in `WIFI_AP_STA` mode. If station connection fails or credentials change, the recovery hotspot `ESP-Watchtower` (Password: `sentinel123`) remains accessible at `http://192.168.4.1/` with a dedicated Wi-Fi configuration card. Credentials can also be configured directly via serial CLI (`wifi <SSID> <PASS>`).
 
 ---
 
-## 🔒 Security Hardening
+## Hardware Specifications & Memory Budget
 
-- **CSRF Origin Whitelisting:** All state-changing POST endpoints (`/api/wol`, `/api/wifi`, `/api/webhook`, `/api/dns-bench`) inspect the HTTP `Origin` header. Requests from third-party websites receive an immediate `403 Forbidden`.
-- **RFC 5452 DNS Resilience:** Avoids static query IDs (`0x1001`), using hardware-assisted 16-bit pseudo-random transaction IDs.
-- **RFC 5905 NTP Synchronization Check:** Does not answer NTP requests until upstream SNTP has acquired valid time synchronization.
-- **Flash Protection:** Limits write cycles to LittleFS via in-memory deduplication of NetBIOS names and event logs.
-
----
-
-## 🛠️ Hardware Requirements
-
-* **Microcontroller:** ESP8266EX development board (NodeMCU v2 / v3 or WeMos D1 Mini).
-* **Flash:** 4MB Flash (configured as 1MB SPIFFS/LittleFS).
-* **Power:** 5V Micro-USB (< 0.5W power consumption, runs indefinitely on any USB phone charger).
-* **Total Cost:** **~$2.50 – $4.00 USD**.
+| Metric | Measured Value | Allocation Budget | Utilization |
+|---|---|---|---|
+| **Flash ROM** | 543,439 Bytes | 1,044,464 Bytes | **52.0%** |
+| **RAM (Heap)** | 43,808 Bytes | 81,920 Bytes | **53.5%** |
+| **Free Heap** | ~32,000 Bytes | — | Stable (0% leak) |
+| **Power Consumption** | ~70–90 mA @ 3.3V | — | **< 0.35 Watts** |
+| **Hardware Target** | NodeMCU v2 / ESP-12E / D1 Mini | ESP8266EX @ 80 MHz | — |
 
 ---
 
-## 🚀 Quickstart Guide
+## Getting Started
 
-### 1. Clone the Repository
+### 1. Prerequisites
+- [PlatformIO Core (CLI)](https://platformio.org/install/cli) or PlatformIO IDE
+- A standard ESP8266 development board (NodeMCU v2 or Wemos D1 Mini)
+- Micro-USB cable
+
+### 2. Build & Flash
+Clone the repository and upload firmware via PlatformIO:
+
 ```bash
 git clone https://github.com/prasadabhishek/esp-watchtower.git
 cd esp-watchtower
-```
 
-### 2. Run Host-Native Unit Tests
-Verify all pure logic algorithms (Jitter math, MAC privacy detection, NTP response builder, WoL magic packet assembly) without physical hardware:
-```bash
+# Run native test suite (18 unit tests)
 pio test -e native
-# Tests: 16 succeeded in 0.41s
-```
 
-### 3. Flash to Physical Hardware
-Connect your NodeMCU board via USB and run:
-```bash
+# Compile and flash to connected board
 pio run -e nodemcuv2 -t upload
 ```
 
-### 4. Provision Wi-Fi Credentials
-On first boot (or if Wi-Fi is unconfigured), Watchtower starts a captive access point:
-1. Connect to Wi-Fi: **`ESP-Watchtower`** (Password: `sentinel123`).
-2. Open **`http://192.168.4.1/`** in your browser.
-3. Select your home network and enter the password. The board will connect and receive a local IP (e.g. `192.168.50.191`).
+### 3. Initial Configuration
 
-### 5. Configure Discord Phone Alerts
-1. In Discord: Channel Settings ➔ **Integrations** ➔ **Webhooks** ➔ **Copy Webhook URL**.
-2. Go to **Tab 4 (Settings)** on your Watchtower dashboard, paste the webhook URL, and click **Save Webhook**.
+1. Connect to the setup Wi-Fi hotspot broadcast by the device:
+   - **SSID:** `ESP-Watchtower`
+   - **Password:** `sentinel123`
+2. Open `http://192.168.4.1/` in your browser.
+3. In the **Network Settings** section:
+   - Enter your home Wi-Fi SSID and Password, then click **Connect to Wi-Fi**.
+   - Paste your Discord Webhook URL and toggle your notification preferences.
+4. Once connected, the device acquires a local IP via DHCP (e.g. `192.168.50.191`) and serves the full executive dashboard on your home LAN.
 
----
-
-## 🌍 Remote Access Anywhere via Tailscale
-
-Access your Watchtower dashboard securely from outside your home without exposing ports to the internet:
-
-### Option A: Tailscale Serve (Reverse Proxy)
-Run on any Mac or Linux machine on your home LAN:
+Alternatively, configure credentials directly via the USB serial interface (115200 baud):
 ```bash
-tailscale serve --bg http://<ESP_IP>:80
+wifi "YourHomeSSID" "YourPassword"
+webhook "https://discord.com/api/webhooks/..."
+status
 ```
-This generates a private HTTPS endpoint (e.g. `https://your-node.ts.net/`) accessible to your Tailscale devices.
 
-### Option B: Tailscale Subnet Router
-Advertise your home subnet:
+---
+
+## Automated Test Verification
+
+The core logic is isolated from hardware APIs in [`include/watchtower_logic.h`](include/watchtower_logic.h) and verified through 18 native unit tests covering MAC parsing, Wake-on-LAN frame layout, Blame Meter algorithms, RFC 3550 jitter calculation, NetBIOS decoding, server-side table sorting, and outage threshold logic:
+
 ```bash
-tailscale up --advertise-routes=192.168.1.0/24
+$ pio test -e native
+
+Processing * in native environment
+--------------------------------------------------------------------------------
+test/test_main.cpp:364: test_mac_parser_colon          [PASSED]
+test/test_main.cpp:365: test_mac_parser_hyphen         [PASSED]
+test/test_main.cpp:366: test_mac_parser_invalid        [PASSED]
+test/test_main.cpp:367: test_magic_packet_structure    [PASSED]
+test/test_main.cpp:368: test_ip_helpers                [PASSED]
+test/test_main.cpp:369: test_lan_device_upsert_state   [PASSED]
+test/test_main.cpp:370: test_vip_tagging               [PASSED]
+test/test_main.cpp:371: test_outage_configurable_thresh[PASSED]
+test/test_main.cpp:372: test_netbios_parser            [PASSED]
+test/test_main.cpp:373: test_blame_meter               [PASSED]
+test/test_main.cpp:374: test_jitter_calculation        [PASSED]
+test/test_main.cpp:375: test_randomized_mac_detection  [PASSED]
+test/test_main.cpp:376: test_outage_claim_receipt      [PASSED]
+test/test_main.cpp:377: test_dns_probe_packets         [PASSED]
+test/test_main.cpp:378: test_micro_ntp_server          [PASSED]
+test/test_main.cpp:379: test_mqtt_telemetry_packets    [PASSED]
+test/test_main.cpp:380: test_device_presence_config    [PASSED]
+test/test_main.cpp:381: test_server_side_device_sorting[PASSED]
+--------------------- native:* [PASSED] Took 0.42 seconds ---------------------
+================= 18 test cases: 18 succeeded in 00:00:00.416 =================
 ```
-You can now navigate directly to `http://<ESP_IP>` from your phone anywhere in the world.
 
 ---
 
-## 📡 REST API Reference
+## License
 
-| Endpoint | Method | Security | Description |
-| :--- | :--- | :--- | :--- |
-| `/api/status` | `GET` | Open | Returns live telemetry (uptime, heap, ping, jitter, blame verdict, DNS, NTP). |
-| `/api/logs` | `GET` | Open | Returns the in-memory rolling event log as JSON. |
-| `/api/download-logs` | `GET` | Open | Downloads persistent LittleFS audit history (`/audit.log`) as a `.csv` file. |
-| `/api/wol` | `POST` | CSRF Guard | Broadcasts an 802.3 Wake-on-LAN Magic Packet (`{"mac":"AA:BB:CC:DD:EE:FF"}`). |
-| `/api/dns-bench` | `POST` | CSRF Guard | Triggers a fresh UDP 53 RFC 1035 query to router DNS vs. 1.1.1.1. |
-| `/api/send-report` | `POST` | CSRF Guard | Dispatches a Daily Morning Report summary to Discord immediately. |
-| `/api/test-alert` | `POST` | CSRF Guard | Simulates a burglar alarm trip (fires strobe + test alert). |
-| `/api/wifi` | `POST` | CSRF Guard | Updates SSID and WPA2 credentials (`{"ssid":"...","pass":"..."}`). |
-| `/api/webhook` | `POST` | CSRF Guard | Updates the Discord webhook URL (`{"url":"..."}`). |
-| `/api/mqtt` | `POST` | CSRF Guard | Updates Home Assistant MQTT broker host (`{"host":"192.168.1.50"}`). |
-| `/api/clear-logs` | `POST` | CSRF Guard | Purges flash audit records and resets counters. |
-
----
-
-## 📊 Hardware Resource Utilization
-
-| Metric | Compile-Time Usage | Available / Total | Free Headroom |
-| :--- | :--- | :--- | :--- |
-| **RAM (Heap / Data)** | **41,856 bytes** (51.1%) | 81,920 bytes | **28,944 bytes Free Heap** at runtime |
-| **Flash Memory** | **526,279 bytes** (50.4%) | 1,044,464 bytes | **518,185 bytes Free Flash** |
-| **Power Consumption** | **~0.42 Watts** (84 mA @ 5V) | Standard USB Port | Negligible annual cost (<$0.50/year) |
-
----
-
-## 🧪 Unit Tests
-
-Pure logical validation is segregated in [`watchtower_logic.h`](file:///Users/abhishekprasad/esp-watchtower/include/watchtower_logic.h) and verified with PlatformIO Native:
-- `test_mac_address_parsing`
-- `test_wake_on_lan_magic_packet`
-- `test_outage_duration_calculation`
-- `test_sla_credit_calculation`
-- `test_packet_loss_calculation`
-- `test_uptime_formatting`
-- `test_discord_json_escaping`
-- `test_ip_address_parsing`
-- `test_ip_to_string`
-- `test_device_table_capacity`
-- `test_device_vip_status_retention`
-- `test_daily_report_format`
-- `test_blame_diagnosis`
-- `test_rfc1035_dns_query_format`
-- `test_jitter_calculation`
-- `test_randomized_mac_detection`
-
----
-
-## 📜 License
-This project is open-source under the [MIT License](LICENSE).
+MIT License. Open source and free for home and personal use.

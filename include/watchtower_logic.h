@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <algorithm>
 
 // --- MAC Parsing & Wake-on-LAN Magic Packet ---
 inline bool parseMacAddress(const char* macStr, uint8_t macOut[6]) {
@@ -25,7 +26,11 @@ inline bool buildMagicPacket(const uint8_t mac[6], uint8_t packetOut[102]) {
 }
 
 // --- Outage & Duration Calculation ---
-inline bool evaluateOutageCondition(bool pingOk, unsigned long nowMs, unsigned long& outageStartMs,
+// ponytail: Evaluates whether a confirmed ISP downtime is occurring.
+// An outage is ONLY confirmed if the local Wi-Fi router is healthy (gwOk == true),
+// but the WAN (outside internet) is unreachable (wanOk == false).
+// If the local router is also unreachable, it is a local Wi-Fi or router reboot, NOT an ISP outage.
+inline bool evaluateOutageCondition(bool gwOk, bool wanOk, unsigned long nowMs, unsigned long& outageStartMs,
                                    uint32_t thresholdSec, bool& isCurrentlyDown,
                                    bool& shouldAlertDown, bool& shouldAlertRestored,
                                    uint32_t& totalOutageDurationSec) {
@@ -33,7 +38,11 @@ inline bool evaluateOutageCondition(bool pingOk, unsigned long nowMs, unsigned l
   shouldAlertRestored = false;
   totalOutageDurationSec = 0;
 
-  if (!pingOk) {
+  // STRICT ISP DOWNTIME CONDITION:
+  // Gateway/Router is answering, but WAN is dead.
+  bool isSureIspDown = (gwOk && !wanOk);
+
+  if (isSureIspDown) {
     if (outageStartMs == 0) {
       outageStartMs = nowMs;
     }
@@ -43,17 +52,27 @@ inline bool evaluateOutageCondition(bool pingOk, unsigned long nowMs, unsigned l
       return true;
     }
   } else {
-    if (isCurrentlyDown) {
+    // If it was marked as a confirmed ISP outage, and WAN has now returned
+    if (isCurrentlyDown && wanOk) {
       totalOutageDurationSec = (uint32_t)((nowMs - outageStartMs) / 1000UL);
       isCurrentlyDown = false;
       shouldAlertRestored = true;
       outageStartMs = 0;
       return true;
     }
-    outageStartMs = 0; // Reset intermittent failure
+    if (!isCurrentlyDown) {
+      outageStartMs = 0; // Reset intermittent failure
+    }
   }
   return false;
 }
+
+struct IspOutageRecord {
+  uint32_t id;
+  uint32_t start_sec;
+  uint32_t duration_sec;
+  bool is_active;
+};
 
 // --- Network Diagnosis: Blame Meter & Queueing Theory Jitter ---
 // ponytail: Categorizes latency/loss and queue oscillation into plain English diagnosis
@@ -104,6 +123,21 @@ inline const char* getBlameDescription(BlameVerdict verdict) {
   }
 }
 
+// --- Verified ISP Downtime Formatter ---
+inline bool formatDowntimeLogEntry(char* out, size_t maxLen, uint32_t outageId, uint32_t startSecAgo, uint32_t durationSec, bool isActive) {
+  if (!out || maxLen < 120) return false;
+  uint32_t mins = durationSec / 60;
+  uint32_t secs = durationSec % 60;
+  if (isActive) {
+    snprintf(out, maxLen, "[Outage #%u] Started %us ago | Status: ONGOING DOWNTIME | Cause: Confirmed ISP Failure (Local Router Online)",
+             outageId, startSecAgo);
+  } else {
+    snprintf(out, maxLen, "[Outage #%u] %um %us downtime | Status: RESTORED | Cause: Confirmed ISP Failure (Local Router Online)",
+             outageId, mins, secs);
+  }
+  return true;
+}
+
 // --- ISP Outage Claim Receipt Formatter ---
 inline bool formatOutageClaimReceipt(char* out, size_t maxLen,
                                      const char* ispName, const char* accountId,
@@ -138,6 +172,7 @@ struct LanDevice {
   char name[32];
   char vendor[20];
   bool is_vip;
+  bool track_presence; // true if this specific device should trigger arrival/departure notifications
   bool is_online;
   uint32_t first_seen_sec;
   uint32_t last_seen_sec;
@@ -353,6 +388,7 @@ inline bool upsertDeviceRecord(LanDevice* list, uint8_t& count, uint8_t maxCap,
     snprintf(list[idx].name, sizeof(list[idx].name), "Device %s", ipBuf);
   }
   list[idx].is_vip = false;
+  list[idx].track_presence = false;
   list[idx].is_online = true;
   list[idx].first_seen_sec = nowSec;
   list[idx].last_seen_sec = nowSec;
@@ -398,6 +434,39 @@ inline bool toggleVipStatus(LanDevice* list, uint8_t count, const uint8_t ip[4],
     list[idx].name[sizeof(list[idx].name) - 1] = '\0';
   }
   return true;
+}
+
+// ponytail: Pure server-side table sorting in C++ (Zero JavaScript)
+inline void sortDeviceList(LanDevice* list, uint8_t count, const char* sortKey, bool desc) {
+  if (!list || count < 2) return;
+  const char* key = (sortKey && strlen(sortKey) > 0) ? sortKey : "ip";
+
+  std::sort(list, list + count, [key, desc](const LanDevice& a, const LanDevice& b) {
+    int cmp = 0;
+    if (strcmp(key, "name") == 0) {
+      cmp = strcasecmp(a.name, b.name);
+    } else if (strcmp(key, "vendor") == 0) {
+      cmp = strcasecmp(a.vendor, b.vendor);
+    } else if (strcmp(key, "latency") == 0) {
+      if (a.is_online != b.is_online) {
+        return desc ? (!a.is_online < !b.is_online) : (a.is_online > b.is_online);
+      }
+      cmp = a.latency_ms - b.latency_ms;
+    } else if (strcmp(key, "seen") == 0) {
+      cmp = (a.last_seen_sec > b.last_seen_sec) ? 1 : (a.last_seen_sec < b.last_seen_sec ? -1 : 0);
+    } else if (strcmp(key, "status") == 0) {
+      cmp = (int)a.is_online - (int)b.is_online;
+    } else if (strcmp(key, "vip") == 0) {
+      cmp = (int)a.is_vip - (int)b.is_vip;
+    } else if (strcmp(key, "presence") == 0) {
+      cmp = (int)a.track_presence - (int)b.track_presence;
+    } else { // default: "ip"
+      uint32_t ipA = ((uint32_t)a.ip[0] << 24) | ((uint32_t)a.ip[1] << 16) | ((uint32_t)a.ip[2] << 8) | a.ip[3];
+      uint32_t ipB = ((uint32_t)b.ip[0] << 24) | ((uint32_t)b.ip[1] << 16) | ((uint32_t)b.ip[2] << 8) | b.ip[3];
+      cmp = (ipA < ipB) ? -1 : (ipA > ipB ? 1 : 0);
+    }
+    return desc ? (cmp > 0) : (cmp < 0);
+  });
 }
 
 // --- Feature #7: DNS Hijacking & Benchmark Probe (RFC 1035 UDP 53) ---
