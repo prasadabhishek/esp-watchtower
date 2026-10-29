@@ -180,13 +180,39 @@ inline void resolveVendor(const uint8_t mac[6], char* out, size_t maxLen) {
   else if (mac[0] == 0x40 && mac[1] == 0xae && mac[2] == 0x30) {
     strncpy(out, "Google Nest", maxLen);
   }
-  // Amazon Echo
-  else if (mac[0] == 0x80 && mac[1] == 0x48 && mac[2] == 0x2c) {
-    strncpy(out, "Amazon Echo", maxLen);
+  // Amazon Echo / Alexa
+  else if ((mac[0] == 0x80 && mac[1] == 0x48 && mac[2] == 0x2c) ||
+           (mac[0] == 0x74 && mac[1] == 0xec && mac[2] == 0xb2) ||
+           (mac[0] == 0x88 && mac[1] == 0x71 && mac[2] == 0xe5) ||
+           (mac[0] == 0x74 && mac[1] == 0xd6 && mac[2] == 0x37) ||
+           (mac[0] == 0x58 && mac[1] == 0xe4 && mac[2] == 0x88) ||
+           (mac[0] == 0x14 && mac[1] == 0x0a && mac[2] == 0xc5)) {
+    strncpy(out, "Amazon Alexa", maxLen);
   }
-  // Intel
-  else if (mac[0] == 0xa4 && mac[1] == 0x8d && mac[2] == 0x3b) {
-    strncpy(out, "Intel PC", maxLen);
+  // Roborock
+  else if (mac[0] == 0x24 && mac[1] == 0x9e && mac[2] == 0x7d) {
+    strncpy(out, "Roborock Vacuum", maxLen);
+  }
+  // TP-Link
+  else if (mac[0] == 0xcc && mac[1] == 0x32 && mac[2] == 0xe5) {
+    strncpy(out, "TP-Link Smart Plug", maxLen);
+  }
+  // Canon
+  else if (mac[0] == 0x74 && mac[1] == 0x38 && mac[2] == 0xb7) {
+    strncpy(out, "Canon Printer", maxLen);
+  }
+  // Vizio SmartCast
+  else if ((mac[0] == 0xa4 && mac[1] == 0x8d && mac[2] == 0x3b) ||
+           (mac[0] == 0x2c && mac[1] == 0x64 && mac[2] == 0x1f)) {
+    strncpy(out, "Vizio SmartCast", maxLen);
+  }
+  // LG Smart TV
+  else if (mac[0] == 0x4c && mac[1] == 0xba && mac[2] == 0xd7) {
+    strncpy(out, "LG Smart TV", maxLen);
+  }
+  // Smart Appliance (AzureWave)
+  else if (mac[0] == 0x14 && mac[1] == 0x13 && mac[2] == 0x33) {
+    strncpy(out, "Smart Appliance", maxLen);
   }
   // Raspberry Pi
   else if ((mac[0] == 0xb8 && mac[1] == 0x27 && mac[2] == 0xeb) ||
@@ -197,6 +223,24 @@ inline void resolveVendor(const uint8_t mac[6], char* out, size_t maxLen) {
     strncpy(out, "LAN Client", maxLen);
   }
   out[maxLen - 1] = '\0';
+}
+
+// ponytail: NetBIOS names only cover Windows/Samba/NAS devices; upgrade path: lightweight mDNS PTR instance reader if Apple names need zero-config discovery
+inline bool parseNetbiosName(const uint8_t* payload, size_t len, char* nameOut, size_t maxLen) {
+  if (!payload || len < 74 || !nameOut || maxLen < 2) return false;
+  uint8_t numNames = payload[56];
+  if (numNames == 0 || numNames > 20) return false;
+  char raw[16];
+  memcpy(raw, &payload[57], 15);
+  raw[15] = '\0';
+  for (int i = 14; i >= 0; i--) {
+    if (raw[i] == ' ' || raw[i] == 0) raw[i] = '\0';
+    else break;
+  }
+  if (strlen(raw) == 0) return false;
+  strncpy(nameOut, raw, maxLen);
+  nameOut[maxLen - 1] = '\0';
+  return true;
 }
 
 inline int findDevice(const LanDevice* list, uint8_t count, const uint8_t ip[4]) {
@@ -260,7 +304,11 @@ inline bool upsertDeviceRecord(LanDevice* list, uint8_t& count, uint8_t maxCap,
   }
   char ipBuf[16];
   ipToString(ip, ipBuf, sizeof(ipBuf));
-  snprintf(list[idx].name, sizeof(list[idx].name), "Device %s", ipBuf);
+  if (strcmp(list[idx].vendor, "LAN Client") != 0 && strcmp(list[idx].vendor, "LAN Device") != 0 && strcmp(list[idx].vendor, "Generic Client") != 0) {
+    snprintf(list[idx].name, sizeof(list[idx].name), "%s", list[idx].vendor);
+  } else {
+    snprintf(list[idx].name, sizeof(list[idx].name), "Device %s", ipBuf);
+  }
   list[idx].is_vip = false;
   list[idx].is_online = true;
   list[idx].first_seen_sec = nowSec;

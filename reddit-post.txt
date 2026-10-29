@@ -1,0 +1,39 @@
+=== TITLE (Copy for Post Title) ===
+I turned a $3 ESP8266 into an autonomous Home Network Sentinel & Canary Honeypot with instant Discord alerts (Open Source)
+
+
+=== POST BODY (Copy for Post Body / Description) ===
+Hey everyone,
+
+I built **ESP-Watchtower**, an autonomous, always-on hardware sentinel that turns a cheap $3 ESP8266 (NodeMCU / D1 Mini) into a 24/7 network guard with zero recurring subscriptions.
+
+The idea was to have a lightweight, dedicated watchdog living on the local subnet that catches port scans, monitors ISP reliability, and provides remote emergency controls.
+
+### 🛡️ What it does:
+
+1. **3 Armed Canary Traps (Honeypots):**
+   - **Port 23 (Telnet):** Emulates an Ubuntu Linux terminal. Traps intruder IPs, attempted logins, and brute-force passwords.
+   - **Port 8080 (HTTP):** Realistic fake router gateway login that records credential stuffing attempts.
+   - **Port 554 (RTSP):** Mimics an IP security camera stream to detect rogue scanners probing for video feeds.
+2. **🌐 Internet Health & Outage Tracker:**
+   - Continuously monitors gateway and public DNS (`1.1.1.1`) latency.
+   - Logs packet loss and calculates exact power/internet outage durations.
+3. **⚡ Remote Wake-Up Switch (Wake-on-LAN):**
+   - Send Wake-on-LAN magic packets from the dashboard to wake up sleeping PCs or home lab servers.
+4. **🔔 Zero-Cloud Phone Alerts:**
+   - Real-time instant push notifications to Discord for intrusion attempts and connection drops.
+   - Automated 24-hour daily security morning reports.
+5. **🔒 Tailscale Ready:**
+   - Built-in web dashboard with dark HUD mode, accessible securely outside the home via Tailscale without port forwarding.
+6. **💾 Flash Persistence:**
+   - All events append to internal LittleFS flash (`/audit.log`) and survive reboots and power outages.
+
+### 🧪 Tech Stack:
+- Framework: Arduino / PlatformIO for ESP8266
+- Persistent Storage: LittleFS
+- Pure host-native unit test suite (`pio test -e native`)
+
+Everything is 100% open source under the MIT license:
+👉 **GitHub Repo:** https://github.com/prasadabhishek/esp-watchtower
+
+Firmware, schematics, and quickstart setup guide are in the README. Feedback, questions, and feature requests are very welcome!

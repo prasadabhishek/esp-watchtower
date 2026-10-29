@@ -232,12 +232,13 @@ void saveVipList() {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   for (uint8_t i = 0; i < lanDeviceCount; i++) {
-    if (lanDevices[i].is_vip) {
+    if (lanDevices[i].is_vip || (strlen(lanDevices[i].name) > 0 && strncmp(lanDevices[i].name, "Device ", 7) != 0)) {
       JsonObject obj = arr.add<JsonObject>();
       char ipStr[16];
       ipToString(lanDevices[i].ip, ipStr, sizeof(ipStr));
       obj["ip"] = ipStr;
       obj["name"] = lanDevices[i].name;
+      obj["vip"] = lanDevices[i].is_vip;
     }
   }
   serializeJson(doc, f);
@@ -256,11 +257,19 @@ void loadVipList() {
   for (JsonObject obj : arr) {
     const char* ipStr = obj["ip"];
     const char* nameStr = obj["name"];
+    bool isVip = obj["vip"] | false;
     uint8_t ip[4];
     if (ipStr && parseIpAddress(ipStr, ip)) {
       bool cameOnline = false, isNew = false;
       upsertDeviceRecord(lanDevices, lanDeviceCount, MAX_LAN_DEVICES, ip, NULL, -1, nowSec, cameOnline, isNew);
-      toggleVipStatus(lanDevices, lanDeviceCount, ip, true, nameStr ? nameStr : "");
+      int idx = findDevice(lanDevices, lanDeviceCount, ip);
+      if (idx >= 0) {
+        lanDevices[idx].is_vip = isVip;
+        if (nameStr && strlen(nameStr) > 0) {
+          strncpy(lanDevices[idx].name, nameStr, sizeof(lanDevices[idx].name) - 1);
+          lanDevices[idx].name[sizeof(lanDevices[idx].name) - 1] = '\0';
+        }
+      }
     }
   }
 }
@@ -488,6 +497,28 @@ void setupDashboardServer() {
         addLog("VIP", String("Added VIP target: ") + nameStr + " (" + ipStr + ")", "info");
         server.send(200, "application/json", "{\"status\":\"ok\"}");
         return;
+      }
+    }
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+  });
+
+  server.on("/api/device/rename", HTTP_POST, []() {
+    if (server.hasArg("plain")) {
+      JsonDocument doc;
+      deserializeJson(doc, server.arg("plain"));
+      const char* ipStr = doc["ip"];
+      const char* nameStr = doc["name"];
+      uint8_t ip[4];
+      if (ipStr && nameStr && parseIpAddress(ipStr, ip)) {
+        int idx = findDevice(lanDevices, lanDeviceCount, ip);
+        if (idx >= 0) {
+          strncpy(lanDevices[idx].name, nameStr, sizeof(lanDevices[idx].name) - 1);
+          lanDevices[idx].name[sizeof(lanDevices[idx].name) - 1] = '\0';
+          saveVipList();
+          addLog("RADAR", String("Renamed device ") + ipStr + " -> " + nameStr, "info");
+          server.send(200, "application/json", "{\"status\":\"ok\"}");
+          return;
+        }
       }
     }
     server.send(400, "application/json", "{\"status\":\"error\"}");
@@ -809,6 +840,34 @@ void handleLanRadar() {
       harvestArpTable();
     }
   }
+
+  // 3. Low-frequency NetBIOS Hostname Prober (queries 1 active LAN device every 3 seconds)
+  // ponytail: NetBIOS names only cover Windows/Samba/NAS devices; upgrade path: lightweight mDNS PTR instance reader if Apple names need zero-config discovery
+  static unsigned long lastNbProbeMs = 0;
+  static uint8_t nextNbDevIdx = 0;
+  if (lanDeviceCount > 0 && (now - lastNbProbeMs >= 3000UL)) {
+    lastNbProbeMs = now;
+    if (nextNbDevIdx >= lanDeviceCount) nextNbDevIdx = 0;
+    
+    // Only query if device is online and doesn't already have a human hostname
+    if (lanDevices[nextNbDevIdx].is_online &&
+        (strncmp(lanDevices[nextNbDevIdx].name, "Device ", 7) == 0 ||
+         strcmp(lanDevices[nextNbDevIdx].name, lanDevices[nextNbDevIdx].vendor) == 0)) {
+      IPAddress targetIp(lanDevices[nextNbDevIdx].ip[0], lanDevices[nextNbDevIdx].ip[1],
+                         lanDevices[nextNbDevIdx].ip[2], lanDevices[nextNbDevIdx].ip[3]);
+      static const uint8_t nbQuery[] = {
+        0x80, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x20,
+        'C','K','A','A','A','A','A','A','A','A','A','A','A','A','A','A',
+        'A','A','A','A','A','A','A','A','A','A','A','A','A','A','A','A',
+        0x00, 0x00, 0x21, 0x00, 0x01
+      };
+      udp.beginPacket(targetIp, 137);
+      udp.write(nbQuery, sizeof(nbQuery));
+      udp.endPacket();
+    }
+    nextNbDevIdx++;
+  }
 }
 
 // --- Setup ---
@@ -831,7 +890,7 @@ void setup() {
     Serial.printf("[WIFI] Connecting to %s in Station Mode...\n", cfg_ssid);
     WiFi.begin(cfg_ssid, cfg_pass);
     unsigned long startConn = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - startConn < 30000)) {
+    while (WiFi.status() != WL_CONNECTED && (millis() - startConn < 45000)) {
       delay(250);
       Serial.print(".");
     }
@@ -877,9 +936,25 @@ void loop() {
   MDNS.update();
   handleSerialCLI();
 
-  // Drain any incoming UDP packets (SSDP / mDNS / WoL) and harvest learned hosts
+  // Drain any incoming UDP packets (SSDP / mDNS / NetBIOS / WoL) and harvest learned hosts
   int packetSize = udp.parsePacket();
   if (packetSize > 0) {
+    if (udp.remotePort() == 137 && packetSize >= 74) {
+      uint8_t nbBuf[128];
+      int r = udp.read(nbBuf, sizeof(nbBuf));
+      char nbName[20];
+      if (parseNetbiosName(nbBuf, r, nbName, sizeof(nbName))) {
+        IPAddress remoteIp = udp.remoteIP();
+        uint8_t rip[4] = {remoteIp[0], remoteIp[1], remoteIp[2], remoteIp[3]};
+        int idx = findDevice(lanDevices, lanDeviceCount, rip);
+        if (idx >= 0) {
+          strncpy(lanDevices[idx].name, nbName, sizeof(lanDevices[idx].name) - 1);
+          lanDevices[idx].name[sizeof(lanDevices[idx].name) - 1] = '\0';
+          addLog("RADAR", String("NetBIOS hostname found: ") + remoteIp.toString() + " -> " + nbName, "info");
+          saveVipList();
+        }
+      }
+    }
     harvestArpTable();
     udp.flush();
   }

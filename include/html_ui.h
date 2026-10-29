@@ -515,7 +515,7 @@ async function refreshDevices() {
         <td><button class="${starClass}" onclick="toggleVip('${dev.ip}', ${!dev.vip})">${starIcon}</button></td>
         <td style="font-weight: 600; color: var(--text-bold);">${dev.ip}</td>
         <td><span style="color: var(--text-dim);">${dev.mac || '00:00:00:00:00:00'}</span> <em style="color: var(--cyan); font-style: normal;">[${dev.vendor || 'Client'}]</em></td>
-        <td>${dev.name || 'Unnamed'}${vipBadge}</td>
+        <td><span style="cursor:pointer;border-bottom:1px dotted var(--text-dim);" title="Click to rename" onclick="renameDevice('${dev.ip}', '${(dev.name||'').replace(/'/g, "\\'")}')">${dev.name || 'Unnamed'}</span> <span style="font-size:10px;cursor:pointer;opacity:0.6;" onclick="renameDevice('${dev.ip}', '${(dev.name||'').replace(/'/g, "\\'")}')">✏️</span>${vipBadge}</td>
         <td>${latencyStr}</td>
         <td style="color: var(--text-dim);">${dev.last_seen_sec ? dev.last_seen_sec + 's ago' : 'just now'}</td>
         <td>${statusBadge}</td>
@@ -561,6 +561,18 @@ async function toggleVip(ip, newVipState) {
     body: JSON.stringify({ ip: ip, vip: newVipState })
   });
   refreshDevices();
+}
+
+async function renameDevice(ip, curName) {
+  const n = prompt(`Rename device (${ip}):`, curName);
+  if (n !== null && n.trim() !== '' && n.trim() !== curName) {
+    await fetch('/api/device/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip: ip, name: n.trim() })
+    });
+    refreshDevices();
+  }
 }
 
 async function toggleScanner() {

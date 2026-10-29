@@ -208,6 +208,25 @@ void test_outage_configurable_threshold(void) {
   TEST_ASSERT_EQUAL_UINT32(600, totalDurationSec);
 }
 
+void test_netbios_parser(void) {
+  uint8_t sample[80];
+  memset(sample, 0, sizeof(sample));
+  sample[56] = 1; // 1 name
+  memcpy(&sample[57], "APOLLOSYNOLOGY ", 15);
+  sample[72] = 0x00; // Workstation Service
+
+  char name[20];
+  bool ok = parseNetbiosName(sample, sizeof(sample), name, sizeof(name));
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_EQUAL_STRING("APOLLOSYNOLOGY", name);
+
+  // Invalid length
+  TEST_ASSERT_FALSE(parseNetbiosName(sample, 50, name, sizeof(name)));
+  // Zero names
+  sample[56] = 0;
+  TEST_ASSERT_FALSE(parseNetbiosName(sample, sizeof(sample), name, sizeof(name)));
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_mac_parser_colon);
@@ -222,5 +241,6 @@ int main(int argc, char **argv) {
   RUN_TEST(test_lan_device_upsert_and_state);
   RUN_TEST(test_vip_tagging);
   RUN_TEST(test_outage_configurable_threshold);
+  RUN_TEST(test_netbios_parser);
   return UNITY_END();
 }
