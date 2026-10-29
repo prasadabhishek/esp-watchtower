@@ -12,6 +12,7 @@
 extern "C" {
 #include "lwip/etharp.h"
 #include "lwip/netif.h"
+#include "lwip/ip4_addr.h"
 }
 
 #include "config.h"
@@ -674,6 +675,87 @@ void runNetworkWatchdog() {
 }
 
 // --- LAN Radar & VIP Sentinel Engine ---
+struct netif* getStaNetif() {
+  struct netif* n;
+  NETIF_FOREACH(n) {
+    if (n->num == 0) return n;
+  }
+  return netif_default;
+}
+
+void harvestArpTable() {
+  ip4_addr_t *ip_entry = NULL;
+  struct netif *netif_entry = NULL;
+  struct eth_addr *eth_entry = NULL;
+  uint32_t nowSec = millis() / 1000;
+  IPAddress localIp = WiFi.localIP();
+
+  for (size_t i = 0; i < 10; i++) {
+    if (etharp_get_entry(i, &ip_entry, &netif_entry, &eth_entry) == 1) {
+      if (ip_entry && eth_entry) {
+        uint8_t* raw = (uint8_t*)&(ip_entry->addr);
+        if (raw[0] == localIp[0] && raw[1] == localIp[1] && raw[2] == localIp[2] &&
+            raw[3] != localIp[3] && raw[3] != 0 && raw[3] != 255) {
+          uint8_t targetBytes[4] = {raw[0], raw[1], raw[2], raw[3]};
+          bool cameOnline = false, isNew = false;
+          upsertDeviceRecord(lanDevices, lanDeviceCount, MAX_LAN_DEVICES,
+                             targetBytes, eth_entry->addr, 1, nowSec, cameOnline, isNew);
+          if (isNew) {
+            char ipStr[16];
+            ipToString(targetBytes, ipStr, sizeof(ipStr));
+            int idx = findDevice(lanDevices, lanDeviceCount, targetBytes);
+            addLog("LAN_RADAR", String("Active LAN client found: ") + ipStr + " [" + (idx >= 0 ? lanDevices[idx].vendor : "Client") + "]", "info");
+          }
+        }
+      }
+    }
+  }
+}
+
+void sendLanDiscoveryBroadcasts() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  IPAddress localIp = WiFi.localIP();
+  IPAddress bcast(localIp[0], localIp[1], localIp[2], 255);
+
+  // 1. SSDP / UPnP M-SEARCH multicast to 239.255.255.250:1900
+  static const char ssdpMsg[] =
+    "M-SEARCH * HTTP/1.1\r\n"
+    "HOST: 239.255.255.250:1900\r\n"
+    "MAN: \"ssdp:discover\"\r\n"
+    "MX: 2\r\n"
+    "ST: ssdp:all\r\n\r\n";
+  udp.beginPacket(IPAddress(239, 255, 255, 250), 1900);
+  udp.write((const uint8_t*)ssdpMsg, strlen(ssdpMsg));
+  udp.endPacket();
+
+  // 2. NetBIOS Name Query broadcast to subnet:137
+  static const uint8_t netbiosQuery[] = {
+    0x80, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x20,
+    'C','K','A','A','A','A','A','A','A','A','A','A','A','A','A','A',
+    'A','A','A','A','A','A','A','A','A','A','A','A','A','A','A','A',
+    0x00, 0x00, 0x21, 0x00, 0x01
+  };
+  udp.beginPacket(bcast, 137);
+  udp.write(netbiosQuery, sizeof(netbiosQuery));
+  udp.endPacket();
+
+  // 3. mDNS service probe to 224.0.0.251:5353
+  static const uint8_t mdnsQuery[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x09, '_', 's', 'e', 'r', 'v', 'i', 'c', 'e', 's',
+    0x07, '_', 'd', 'n', 's', '-', 's', 'd',
+    0x04, '_', 'u', 'd', 'p',
+    0x05, 'l', 'o', 'c', 'a', 'l',
+    0x00,
+    0x00, 0x0c, 0x00, 0x01
+  };
+  udp.beginPacket(IPAddress(224, 0, 0, 251), 5353);
+  udp.write(mdnsQuery, sizeof(mdnsQuery));
+  udp.endPacket();
+}
+
 void handleLanRadar() {
   if (WiFi.status() != WL_CONNECTED) return;
   unsigned long now = millis();
@@ -701,46 +783,30 @@ void handleLanRadar() {
     }
   }
 
-  // 2. Non-blocking ARP Subnet Sweeper (every 80ms, sends 1 instant ARP request)
-  if (radarSweeperActive && (now - lastRadarTickMs >= 80UL)) {
+  // 2. Non-blocking Station ARP Subnet Sweeper (every 50ms, sends 1 instant ARP request via sta_if)
+  if (radarSweeperActive && (now - lastRadarTickMs >= 50UL)) {
     lastRadarTickMs = now;
     IPAddress localIp = WiFi.localIP();
-    IPAddress targetIp(localIp[0], localIp[1], localIp[2], radarScanHost);
 
     // Skip self and broadcast
     if (radarScanHost != localIp[3] && radarScanHost != 255) {
       ip4_addr_t target_ip4;
-      target_ip4.addr = (uint32_t)targetIp;
-
-      // Check if host answered in LwIP ARP cache
-      struct eth_addr *eth_ret = NULL;
-      const ip4_addr_t *ip_ret = NULL;
-      uint32_t nowSec = now / 1000;
-      uint8_t targetBytes[4] = {localIp[0], localIp[1], localIp[2], radarScanHost};
-
-      if (etharp_find_addr(netif_default, &target_ip4, &eth_ret, &ip_ret) >= 0 && eth_ret) {
-        uint8_t mac[6];
-        memcpy(mac, eth_ret->addr, 6);
-        bool cameOnline = false, isNew = false;
-        upsertDeviceRecord(lanDevices, lanDeviceCount, MAX_LAN_DEVICES, targetBytes,
-                           mac, 1, nowSec, cameOnline, isNew);
-        char ipStr[16];
-        ipToString(targetBytes, ipStr, sizeof(ipStr));
-        int idx = findDevice(lanDevices, lanDeviceCount, targetBytes);
-        if (isNew) {
-          addLog("LAN_RADAR", String("Active LAN client found: ") + ipStr + " [" + (idx >= 0 ? lanDevices[idx].vendor : "Client") + "]", "info");
-        } else if (cameOnline) {
-          addLog("LAN_RADAR", String("Client reconnected: ") + ipStr + " (" + (idx >= 0 ? lanDevices[idx].name : "") + ")", "success");
-        }
+      IP4_ADDR(&target_ip4, localIp[0], localIp[1], localIp[2], radarScanHost);
+      struct netif* sta = getStaNetif();
+      if (sta) {
+        etharp_request(sta, &target_ip4);
       }
-
-      // Fire non-blocking ARP request frame (returns immediately in <0.1ms)
-      etharp_request(netif_default, &target_ip4);
     }
+
+    // Continuously harvest all entries learned by LwIP
+    harvestArpTable();
 
     radarScanHost++;
     if (radarScanHost > 254) {
       radarScanHost = 1;
+      // Broadcast discovery burst every full sweep cycle (~12s)
+      sendLanDiscoveryBroadcasts();
+      harvestArpTable();
     }
   }
 }
@@ -760,21 +826,21 @@ void setup() {
 
   if (strlen(cfg_ssid) > 0) {
     WiFi.mode(WIFI_STA);
+    WiFi.setSleepMode(WIFI_NONE_SLEEP);
     WiFi.setAutoReconnect(true);
     Serial.printf("[WIFI] Connecting to %s in Station Mode...\n", cfg_ssid);
     WiFi.begin(cfg_ssid, cfg_pass);
     unsigned long startConn = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - startConn < 25000)) {
-      delay(500);
+    while (WiFi.status() != WL_CONNECTED && (millis() - startConn < 30000)) {
+      delay(250);
       Serial.print(".");
     }
     Serial.println();
     if (WiFi.status() == WL_CONNECTED) {
       Serial.printf("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+      sendLanDiscoveryBroadcasts();
     } else {
-      Serial.println("[WIFI] Fallback: Activating SoftAP...");
-      WiFi.mode(WIFI_AP_STA);
-      WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS);
+      Serial.println("[WIFI] Still connecting to AP in background...");
     }
   } else {
     WiFi.mode(WIFI_AP_STA);
@@ -810,6 +876,13 @@ void loop() {
   handleLanRadar();
   MDNS.update();
   handleSerialCLI();
+
+  // Drain any incoming UDP packets (SSDP / mDNS / WoL) and harvest learned hosts
+  int packetSize = udp.parsePacket();
+  if (packetSize > 0) {
+    harvestArpTable();
+    udp.flush();
+  }
 
   unsigned long now = millis();
 
