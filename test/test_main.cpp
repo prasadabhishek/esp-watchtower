@@ -197,16 +197,40 @@ void test_netbios_parser(void) {
 
 void test_blame_meter(void) {
   // Normal
-  TEST_ASSERT_EQUAL_INT(BLAME_OK, diagnoseNetworkLag(2, 25, 0));
+  TEST_ASSERT_EQUAL_INT(BLAME_OK, diagnoseNetworkLag(2, 25, 0, 4));
   // ISP Down
-  TEST_ASSERT_EQUAL_INT(BLAME_ISP_DOWN, diagnoseNetworkLag(2, -1, 0));
-  TEST_ASSERT_EQUAL_INT(BLAME_ISP_DOWN, diagnoseNetworkLag(2, 25, 1));
-  // ISP Lag
-  TEST_ASSERT_EQUAL_INT(BLAME_ISP_LAG, diagnoseNetworkLag(5, 180, 0));
+  TEST_ASSERT_EQUAL_INT(BLAME_ISP_DOWN, diagnoseNetworkLag(2, -1, 0, 0));
+  TEST_ASSERT_EQUAL_INT(BLAME_ISP_DOWN, diagnoseNetworkLag(2, 25, 1, 0));
   // Router / Wi-Fi Congestion
-  TEST_ASSERT_EQUAL_INT(BLAME_ROUTER_LAG, diagnoseNetworkLag(85, 95, 0));
+  TEST_ASSERT_EQUAL_INT(BLAME_ROUTER_LAG, diagnoseNetworkLag(85, 95, 0, 5));
+  // Bufferbloat / Queue Oscillation
+  TEST_ASSERT_EQUAL_INT(BLAME_BUFFERBLOAT, diagnoseNetworkLag(5, 50, 0, 42));
+  // ISP Lag
+  TEST_ASSERT_EQUAL_INT(BLAME_ISP_LAG, diagnoseNetworkLag(5, 180, 0, 10));
   // Both Offline
-  TEST_ASSERT_EQUAL_INT(BLAME_OFFLINE, diagnoseNetworkLag(-1, -1, 0));
+  TEST_ASSERT_EQUAL_INT(BLAME_OFFLINE, diagnoseNetworkLag(-1, -1, 0, 0));
+}
+
+void test_jitter_calculation(void) {
+  int flat[5] = {15, 15, 15, 15, 15};
+  TEST_ASSERT_EQUAL_INT(0, calculateJitter(flat, 5));
+
+  int oscillating[5] = {10, 50, 10, 50, 10};
+  // Diffs: 40, 40, 40, 40 -> avg 40
+  TEST_ASSERT_EQUAL_INT(40, calculateJitter(oscillating, 5));
+}
+
+void test_randomized_mac_detection(void) {
+  uint8_t realApple[6] = {0xb0, 0xde, 0x28, 0x30, 0xc1, 0x6a};
+  TEST_ASSERT_FALSE(isRandomizedMac(realApple));
+
+  // Locally Administered bit (Bit 1 of Byte 0 is set: 0x02, 0x7E, 0xD2, 0x36)
+  uint8_t privateIphone[6] = {0x7e, 0x87, 0xde, 0x39, 0x67, 0xab};
+  TEST_ASSERT_TRUE(isRandomizedMac(privateIphone));
+
+  char vendor[24];
+  resolveVendor(privateIphone, vendor, sizeof(vendor));
+  TEST_ASSERT_EQUAL_STRING("Private Mobile MAC", vendor);
 }
 
 void test_outage_claim_receipt(void) {
@@ -276,6 +300,8 @@ int main(int argc, char **argv) {
   RUN_TEST(test_outage_configurable_threshold);
   RUN_TEST(test_netbios_parser);
   RUN_TEST(test_blame_meter);
+  RUN_TEST(test_jitter_calculation);
+  RUN_TEST(test_randomized_mac_detection);
   RUN_TEST(test_outage_claim_receipt);
   RUN_TEST(test_dns_probe_packets);
   RUN_TEST(test_micro_ntp_server);

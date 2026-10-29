@@ -305,6 +305,11 @@ void sendWakeOnLan(const char* macStr) {
     return;
   }
 
+  if (mac[0] == 0 && mac[1] == 0 && mac[2] == 0 && mac[3] == 0 && mac[4] == 0 && mac[5] == 0) {
+    addLog("WOL", "Refused wake packet: MAC cannot be all zeros", "warn");
+    return;
+  }
+
   uint8_t packet[102];
   buildMagicPacket(mac, packet);
 
@@ -414,7 +419,19 @@ inline void sendJsonError(int code = 400) {
   server.send_P(code, PSTR("application/json"), PSTR("{\"status\":\"error\"}"));
 }
 
+inline bool isAuthorizedPost() {
+  if (server.hasHeader("Origin")) {
+    String origin = server.header("Origin");
+    if (origin.indexOf("192.168.50.191") < 0 && origin.indexOf(HOSTNAME) < 0) {
+      return false; // Rejected cross-origin CSRF attempt
+    }
+  }
+  return true;
+}
+
 void setupDashboardServer() {
+  server.collectHeaders("Origin");
+
   server.on("/", HTTP_GET, []() {
     server.send_P(200, "text/html", INDEX_HTML);
   });
@@ -457,7 +474,10 @@ void setupDashboardServer() {
     doc["total_outages"] = metrics.total_outages;
     doc["last_outage_duration"] = metrics.last_outage_duration;
 
-    BlameVerdict verdict = diagnoseNetworkLag(metrics.gateway_ping_ms, metrics.internet_ping_ms, metrics.failed_pings);
+    int jitter = calculateJitter(pingHistory, PING_HISTORY_LEN);
+    doc["jitter_ms"] = jitter;
+
+    BlameVerdict verdict = diagnoseNetworkLag(metrics.gateway_ping_ms, metrics.internet_ping_ms, metrics.failed_pings, jitter);
     doc["blame_verdict"] = (int)verdict;
     doc["blame_desc"] = getBlameDescription(verdict);
 
@@ -506,6 +526,7 @@ void setupDashboardServer() {
   });
 
   server.on("/api/vip/toggle", HTTP_POST, []() {
+    if (!isAuthorizedPost()) { sendJsonError(403); return; }
     if (server.hasArg("plain")) {
       JsonDocument doc;
       deserializeJson(doc, server.arg("plain"));
@@ -527,6 +548,7 @@ void setupDashboardServer() {
   });
 
   server.on("/api/device/rename", HTTP_POST, []() {
+    if (!isAuthorizedPost()) { sendJsonError(403); return; }
     if (server.hasArg("plain")) {
       JsonDocument doc;
       deserializeJson(doc, server.arg("plain"));
@@ -593,6 +615,7 @@ void setupDashboardServer() {
   });
 
   server.on("/api/wol", HTTP_POST, []() {
+    if (!isAuthorizedPost()) { sendJsonError(403); return; }
     if (server.hasArg("plain")) {
       JsonDocument doc;
       deserializeJson(doc, server.arg("plain"));
@@ -622,6 +645,7 @@ void setupDashboardServer() {
   });
 
   server.on("/api/wifi", HTTP_POST, []() {
+    if (!isAuthorizedPost()) { sendJsonError(403); return; }
     if (server.hasArg("plain")) {
       JsonDocument doc;
       deserializeJson(doc, server.arg("plain"));
@@ -641,6 +665,7 @@ void setupDashboardServer() {
   });
 
   server.on("/api/webhook", HTTP_POST, []() {
+    if (!isAuthorizedPost()) { sendJsonError(403); return; }
     if (server.hasArg("plain")) {
       JsonDocument doc;
       deserializeJson(doc, server.arg("plain"));
@@ -658,6 +683,7 @@ void setupDashboardServer() {
   });
 
   server.on("/api/clear-logs", HTTP_POST, []() {
+    if (!isAuthorizedPost()) { sendJsonError(403); return; }
     logCount = 0;
     if (LittleFS.exists("/audit.log")) LittleFS.remove("/audit.log");
     addLog("SYSTEM", "Activity records cleared by owner", "info");
@@ -665,6 +691,7 @@ void setupDashboardServer() {
   });
 
   server.on("/api/config", HTTP_POST, []() {
+    if (!isAuthorizedPost()) { sendJsonError(403); return; }
     if (server.hasArg("plain")) {
       JsonDocument doc;
       deserializeJson(doc, server.arg("plain"));
@@ -694,6 +721,7 @@ void setupDashboardServer() {
   });
 
   server.on("/api/mqtt", HTTP_POST, []() {
+    if (!isAuthorizedPost()) { sendJsonError(403); return; }
     if (server.hasArg("plain")) {
       JsonDocument doc;
       deserializeJson(doc, server.arg("plain"));
@@ -746,10 +774,19 @@ static int sendSingleDnsProbe(IPAddress dnsServer, const char* domain, uint16_t 
 void runDnsBenchmarkProbe() {
   if (WiFi.status() != WL_CONNECTED) return;
   bool dummy = false;
-  dnsRouterMs = sendSingleDnsProbe(WiFi.gatewayIP(), "example.com", 0x1001, false, dummy);
-  dnsCloudflareMs = sendSingleDnsProbe(IPAddress(1, 1, 1, 1), "example.com", 0x1002, false, dummy);
+  // RFC 5452: Cryptographically random 16-bit Transaction IDs to prevent DNS spoofing
+  uint16_t tx1 = (uint16_t)(os_random() & 0xFFFF);
+  if (tx1 == 0) tx1 = 0x1A2B;
+  dnsRouterMs = sendSingleDnsProbe(WiFi.gatewayIP(), "example.com", tx1, false, dummy);
+
+  uint16_t tx2 = (uint16_t)(os_random() & 0xFFFF);
+  if (tx2 == 0) tx2 = 0x3C4D;
+  dnsCloudflareMs = sendSingleDnsProbe(IPAddress(1, 1, 1, 1), "example.com", tx2, false, dummy);
+
+  uint16_t tx3 = (uint16_t)(os_random() & 0xFFFF);
+  if (tx3 == 0) tx3 = 0x5E6F;
   bool hijackedNow = false;
-  sendSingleDnsProbe(WiFi.gatewayIP(), "nxdomain-canary.invalid", 0x1003, true, hijackedNow);
+  sendSingleDnsProbe(WiFi.gatewayIP(), "nxdomain-canary.invalid", tx3, true, hijackedNow);
   if (hijackedNow && !dnsHijacked) {
     addLog("DNS", "Router DNS returned forged IP for .invalid domain (NXDOMAIN Hijacking)", "danger");
   }
@@ -866,7 +903,11 @@ void harvestArpTable() {
             if (raw[3] != 1 && millis() > 45000UL) {
               char macStr[18];
               macToString(eth_entry->addr, macStr, sizeof(macStr));
-              addLog("STRANGER", String("Unrecognized device joined Wi-Fi: ") + ipStr + " (" + macStr + " - " + vendor + ")", "warn");
+              bool isPriv = isRandomizedMac(eth_entry->addr);
+              String strangerMsg = isPriv
+                ? String("Private Mobile MAC device joined Wi-Fi (iOS/Android): ") + ipStr + " (" + macStr + ")"
+                : String("Unrecognized device joined Wi-Fi: ") + ipStr + " (" + macStr + " - " + vendor + ")";
+              addLog("STRANGER", strangerMsg, "warn");
             }
           }
         }
@@ -1090,8 +1131,9 @@ void loop() {
     uint8_t req[48], resp[48];
     ntpUdp.read(req, 48);
     time_t nowUnix = time(nullptr);
-    uint32_t unixSec = (nowUnix > 1000000000L) ? (uint32_t)nowUnix : (1730160000UL + (millis() / 1000));
-    if (buildNtpResponse(req, unixSec, resp)) {
+    bool isSynced = (nowUnix > 1000000000L);
+    uint32_t unixSec = isSynced ? (uint32_t)nowUnix : (1730160000UL + (millis() / 1000));
+    if (buildNtpResponse(req, unixSec, resp, isSynced)) {
       ntpUdp.beginPacket(ntpUdp.remoteIP(), ntpUdp.remotePort());
       ntpUdp.write(resp, 48);
       ntpUdp.endPacket();
@@ -1111,10 +1153,13 @@ void loop() {
         uint8_t rip[4] = {remoteIp[0], remoteIp[1], remoteIp[2], remoteIp[3]};
         int idx = findDevice(lanDevices, lanDeviceCount, rip);
         if (idx >= 0) {
-          strncpy(lanDevices[idx].name, nbName, sizeof(lanDevices[idx].name) - 1);
-          lanDevices[idx].name[sizeof(lanDevices[idx].name) - 1] = '\0';
-          addLog("RADAR", String("NetBIOS hostname found: ") + remoteIp.toString() + " -> " + nbName, "info");
-          saveVipList();
+          // SecOps fix: Deduplicate NetBIOS discovery so it only logs when hostname actually updates
+          if (strcmp(lanDevices[idx].name, nbName) != 0) {
+            strncpy(lanDevices[idx].name, nbName, sizeof(lanDevices[idx].name) - 1);
+            lanDevices[idx].name[sizeof(lanDevices[idx].name) - 1] = '\0';
+            addLog("RADAR", String("NetBIOS hostname found: ") + remoteIp.toString() + " -> " + nbName, "info");
+            saveVipList();
+          }
         }
       }
     }

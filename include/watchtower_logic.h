@@ -55,20 +55,39 @@ inline bool evaluateOutageCondition(bool pingOk, unsigned long nowMs, unsigned l
   return false;
 }
 
-// --- Network Diagnosis: Blame Meter ---
-// ponytail: Categorizes latency/loss into plain English diagnosis without heavy math
+// --- Network Diagnosis: Blame Meter & Queueing Theory Jitter ---
+// ponytail: Categorizes latency/loss and queue oscillation into plain English diagnosis
 enum BlameVerdict {
   BLAME_OK = 0,          // Both router and WAN latency normal
   BLAME_ISP_DOWN = 1,    // Router reachable, but WAN unreachable
   BLAME_ISP_LAG = 2,     // Router fast (<40ms), but WAN lagging (>120ms)
   BLAME_ROUTER_LAG = 3,  // Local Wi-Fi / Router congested (>45ms)
-  BLAME_OFFLINE = 4      // Disconnected from Wi-Fi
+  BLAME_BUFFERBLOAT = 4, // Severe queue oscillation / bufferbloat (Jitter > 30ms)
+  BLAME_OFFLINE = 5      // Disconnected from Wi-Fi
 };
 
-inline BlameVerdict diagnoseNetworkLag(int gwPingMs, int wanPingMs, int failedPings) {
+inline int calculateJitter(const int history[], int len) {
+  if (!history || len < 2) return 0;
+  int sumDiff = 0;
+  int validPairs = 0;
+  int lastValid = -1;
+  for (int i = 0; i < len; i++) {
+    if (history[i] >= 0) {
+      if (lastValid >= 0) {
+        sumDiff += (history[i] > lastValid) ? (history[i] - lastValid) : (lastValid - history[i]);
+        validPairs++;
+      }
+      lastValid = history[i];
+    }
+  }
+  return (validPairs > 0) ? (sumDiff / validPairs) : 0;
+}
+
+inline BlameVerdict diagnoseNetworkLag(int gwPingMs, int wanPingMs, int failedPings, int jitterMs = 0) {
   if (gwPingMs < 0 && wanPingMs < 0) return BLAME_OFFLINE;
   if (wanPingMs < 0 || failedPings > 0) return BLAME_ISP_DOWN;
   if (gwPingMs > 45) return BLAME_ROUTER_LAG;
+  if (jitterMs > 30) return BLAME_BUFFERBLOAT;
   if (wanPingMs > 120) return BLAME_ISP_LAG;
   return BLAME_OK;
 }
@@ -79,6 +98,7 @@ inline const char* getBlameDescription(BlameVerdict verdict) {
     case BLAME_ISP_DOWN: return "ISP OUTAGE DETECTED (Local Wi-Fi is fine)";
     case BLAME_ISP_LAG: return "ISP SLOWDOWN (ISP Lagging, not Wi-Fi)";
     case BLAME_ROUTER_LAG: return "LOCAL WI-FI CONGESTION (Router/RF Congested)";
+    case BLAME_BUFFERBLOAT: return "BUFFERBLOAT / JITTER SPIKE (Queue Instability)";
     case BLAME_OFFLINE: return "DISCONNECTED (No Wi-Fi Link)";
     default: return "CHECKING NETWORK...";
   }
@@ -155,6 +175,12 @@ inline void macToString(const uint8_t mac[6], char* out, size_t maxLen) {
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+inline bool isRandomizedMac(const uint8_t mac[6]) {
+  if (!mac) return false;
+  // IEEE 802 Locally Administered Bit (Bit 1 of Byte 0)
+  return ((mac[0] & 0x02) != 0);
+}
+
 inline void resolveVendor(const uint8_t mac[6], char* out, size_t maxLen) {
   if (!out || maxLen < 16) return;
   if (mac[0] == 0 && mac[1] == 0 && mac[2] == 0 && mac[3] == 0 && mac[4] == 0 && mac[5] == 0) {
@@ -162,6 +188,13 @@ inline void resolveVendor(const uint8_t mac[6], char* out, size_t maxLen) {
     return;
   }
   
+  // IEEE 802 Locally Administered Bit -> iOS / Android / Windows Private MAC
+  if ((mac[0] & 0x02) != 0) {
+    strncpy(out, "Private Mobile MAC", maxLen);
+    out[maxLen - 1] = '\0';
+    return;
+  }
+
   // Apple
   if ((mac[0] == 0xb0 && mac[1] == 0xde && mac[2] == 0x28) ||
       (mac[0] == 0xa4 && mac[1] == 0x83 && mac[2] == 0xe7) ||
@@ -405,13 +438,17 @@ inline bool parseDnsResponse(const uint8_t* buf, size_t len, uint16_t expectedTx
 }
 
 // --- Feature #8: Local Micro-NTP Time Server (RFC 5905 UDP 123) ---
-inline bool buildNtpResponse(const uint8_t req[48], uint32_t unixTimeSec, uint8_t resp[48]) {
+inline bool buildNtpResponse(const uint8_t req[48], uint32_t unixTimeSec, uint8_t resp[48], bool isClockSynced = true) {
   if (!req || !resp || unixTimeSec < 1000000000UL) return false;
   memset(resp, 0, 48);
-  resp[0] = 0x24; // LI = 0, VN = 4, Mode = 4 (Server)
-  resp[1] = 2;    // Stratum 2 (Secondary reference)
-  resp[2] = req[2]; // Copy client Poll interval
-  resp[3] = 0xEC; // Precision -20 (~1 microsecond)
+  resp[0] = isClockSynced ? 0x24 : 0xE4; // LI = 0 (Normal) or LI = 3 (Alarm/Unsynced), VN = 4, Mode = 4 (Server)
+  resp[1] = isClockSynced ? 2 : 16;     // Stratum 2 (Secondary) or 16 (Unsynchronized)
+  resp[2] = req[2];                     // Copy client Poll interval
+  resp[3] = 0xEC;                       // Precision -20 (~1 microsecond)
+  // Root Delay ~16ms (0x0000.0400 in 16.16 fixed-point)
+  resp[6] = 0x01; resp[7] = 0x00;
+  // Root Dispersion ~15ms (0x0000.03E8 in 16.16 fixed-point)
+  resp[10] = 0x00; resp[11] = 0xF0;
   // Reference ID: "LOCL"
   resp[12] = 'L'; resp[13] = 'O'; resp[14] = 'C'; resp[15] = 'L';
 
