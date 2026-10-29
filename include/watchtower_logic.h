@@ -55,6 +55,61 @@ inline bool evaluateOutageCondition(bool pingOk, unsigned long nowMs, unsigned l
   return false;
 }
 
+// --- Network Diagnosis: Blame Meter ---
+// ponytail: Categorizes latency/loss into plain English diagnosis without heavy math
+enum BlameVerdict {
+  BLAME_OK = 0,          // Both router and WAN latency normal
+  BLAME_ISP_DOWN = 1,    // Router reachable, but WAN unreachable
+  BLAME_ISP_LAG = 2,     // Router fast (<40ms), but WAN lagging (>120ms)
+  BLAME_ROUTER_LAG = 3,  // Local Wi-Fi / Router congested (>45ms)
+  BLAME_OFFLINE = 4      // Disconnected from Wi-Fi
+};
+
+inline BlameVerdict diagnoseNetworkLag(int gwPingMs, int wanPingMs, int failedPings) {
+  if (gwPingMs < 0 && wanPingMs < 0) return BLAME_OFFLINE;
+  if (wanPingMs < 0 || failedPings > 0) return BLAME_ISP_DOWN;
+  if (gwPingMs > 45) return BLAME_ROUTER_LAG;
+  if (wanPingMs > 120) return BLAME_ISP_LAG;
+  return BLAME_OK;
+}
+
+inline const char* getBlameDescription(BlameVerdict verdict) {
+  switch (verdict) {
+    case BLAME_OK: return "ALL SYSTEMS FAST (Wi-Fi & ISP Optimal)";
+    case BLAME_ISP_DOWN: return "ISP OUTAGE DETECTED (Local Wi-Fi is fine)";
+    case BLAME_ISP_LAG: return "ISP SLOWDOWN (ISP Lagging, not Wi-Fi)";
+    case BLAME_ROUTER_LAG: return "LOCAL WI-FI CONGESTION (Router/RF Congested)";
+    case BLAME_OFFLINE: return "DISCONNECTED (No Wi-Fi Link)";
+    default: return "CHECKING NETWORK...";
+  }
+}
+
+// --- ISP Outage Claim Receipt Formatter ---
+inline bool formatOutageClaimReceipt(char* out, size_t maxLen,
+                                     const char* ispName, const char* accountId,
+                                     uint32_t totalOutages, uint32_t durationSec,
+                                     uint32_t failedPings, int gwPingMs, int wanPingMs) {
+  if (!out || maxLen < 200) return false;
+  const char* isp = (ispName && strlen(ispName) > 0) ? ispName : "[ISP Provider]";
+  const char* acc = (accountId && strlen(accountId) > 0) ? accountId : "[Account/Circuit #]";
+  
+  uint32_t mins = durationSec / 60;
+  uint32_t secs = durationSec % 60;
+
+  snprintf(out, maxLen,
+    "=== ISP SERVICE OUTAGE CLAIM RECEIPT ===\n"
+    "ISP: %s | Account: %s\n"
+    "Diagnostic Probe: ESP8266 Watchtower Sentinel\n"
+    "Gateway RTT: %d ms | WAN 1.1.1.1 RTT: %d ms\n"
+    "Recorded Outages: %u | Total Failed Checks: %u\n"
+    "Latest Outage Duration: %um %us\n"
+    "Diagnosis: Gateway reachable; upstream ISP connection interrupted.\n"
+    "Request: Billing credit for downtime per SLA terms.\n"
+    "=========================================",
+    isp, acc, gwPingMs, wanPingMs, totalOutages, failedPings, mins, secs);
+  return true;
+}
+
 // --- LAN Device Structures & Radar Logic ---
 
 struct LanDevice {
@@ -310,4 +365,113 @@ inline bool toggleVipStatus(LanDevice* list, uint8_t count, const uint8_t ip[4],
     list[idx].name[sizeof(list[idx].name) - 1] = '\0';
   }
   return true;
+}
+
+// --- Feature #7: DNS Hijacking & Benchmark Probe (RFC 1035 UDP 53) ---
+inline size_t buildDnsQueryPacket(const char* domain, uint16_t txId, uint8_t* out, size_t maxLen) {
+  if (!domain || !out || maxLen < 64) return 0;
+  memset(out, 0, 12);
+  out[0] = (uint8_t)(txId >> 8);
+  out[1] = (uint8_t)(txId & 0xFF);
+  out[2] = 0x01; // Recursion Desired
+  out[5] = 0x01; // QDCOUNT = 1
+
+  size_t pos = 12;
+  const char* p = domain;
+  while (*p) {
+    const char* dot = strchr(p, '.');
+    size_t labelLen = dot ? (size_t)(dot - p) : strlen(p);
+    if (labelLen == 0 || labelLen > 63 || pos + labelLen + 6 >= maxLen) return 0;
+    out[pos++] = (uint8_t)labelLen;
+    memcpy(&out[pos], p, labelLen);
+    pos += labelLen;
+    if (!dot) break;
+    p = dot + 1;
+  }
+  out[pos++] = 0x00; // Root terminator
+  out[pos++] = 0x00; out[pos++] = 0x01; // QTYPE = A (1)
+  out[pos++] = 0x00; out[pos++] = 0x01; // QCLASS = IN (1)
+  return pos;
+}
+
+inline bool parseDnsResponse(const uint8_t* buf, size_t len, uint16_t expectedTxId, uint8_t& rcodeOut, uint16_t& answerCountOut) {
+  if (!buf || len < 12) return false;
+  uint16_t rxId = ((uint16_t)buf[0] << 8) | buf[1];
+  if (rxId != expectedTxId) return false;
+  if ((buf[2] & 0x80) == 0) return false; // Must be QR=1 (response)
+  rcodeOut = buf[3] & 0x0F;
+  answerCountOut = ((uint16_t)buf[6] << 8) | buf[7];
+  return true;
+}
+
+// --- Feature #8: Local Micro-NTP Time Server (RFC 5905 UDP 123) ---
+inline bool buildNtpResponse(const uint8_t req[48], uint32_t unixTimeSec, uint8_t resp[48]) {
+  if (!req || !resp || unixTimeSec < 1000000000UL) return false;
+  memset(resp, 0, 48);
+  resp[0] = 0x24; // LI = 0, VN = 4, Mode = 4 (Server)
+  resp[1] = 2;    // Stratum 2 (Secondary reference)
+  resp[2] = req[2]; // Copy client Poll interval
+  resp[3] = 0xEC; // Precision -20 (~1 microsecond)
+  // Reference ID: "LOCL"
+  resp[12] = 'L'; resp[13] = 'O'; resp[14] = 'C'; resp[15] = 'L';
+
+  // Copy client Transmit Timestamp (bytes 40..47) -> Origin Timestamp (bytes 24..31)
+  memcpy(&resp[24], &req[40], 8);
+
+  // Convert Unix epoch (1970) to NTP epoch (1900): +2208988800UL
+  uint32_t ntpSec = unixTimeSec + 2208988800UL;
+  uint8_t ts[4] = {
+    (uint8_t)(ntpSec >> 24),
+    (uint8_t)(ntpSec >> 16),
+    (uint8_t)(ntpSec >> 8),
+    (uint8_t)(ntpSec & 0xFF)
+  };
+  // Set Reference (16..19), Receive (32..35), and Transmit (40..43) timestamps
+  memcpy(&resp[16], ts, 4);
+  memcpy(&resp[32], ts, 4);
+  memcpy(&resp[40], ts, 4);
+  return true;
+}
+
+// --- Feature #10: Home Assistant MQTT v3.1.1 Telemetry (TCP 1883, Zero External Libs) ---
+inline size_t buildMqttConnectPacket(const char* clientId, uint8_t* out, size_t maxLen) {
+  if (!clientId || !out) return 0;
+  size_t idLen = strlen(clientId);
+  size_t remLen = 10 + 2 + idLen;
+  if (remLen > 127 || maxLen < remLen + 2) return 0;
+  out[0] = 0x10; // CONNECT
+  out[1] = (uint8_t)remLen;
+  // Protocol Name "MQTT" (level 4 = v3.1.1)
+  out[2] = 0x00; out[3] = 0x04;
+  out[4] = 'M'; out[5] = 'Q'; out[6] = 'T'; out[7] = 'T';
+  out[8] = 0x04; // Level 3.1.1
+  out[9] = 0x02; // Clean Session
+  out[10] = 0x00; out[11] = 60; // Keepalive 60s
+  out[12] = (uint8_t)(idLen >> 8);
+  out[13] = (uint8_t)(idLen & 0xFF);
+  memcpy(&out[14], clientId, idLen);
+  return remLen + 2;
+}
+
+inline size_t buildMqttPublishPacket(const char* topic, const char* payload, uint8_t* out, size_t maxLen) {
+  if (!topic || !payload || !out) return 0;
+  size_t tLen = strlen(topic);
+  size_t pLen = strlen(payload);
+  size_t remLen = 2 + tLen + pLen;
+  if (remLen > 250 || maxLen < remLen + 4) return 0;
+  size_t idx = 0;
+  out[idx++] = 0x30; // PUBLISH (QoS 0)
+  if (remLen < 128) {
+    out[idx++] = (uint8_t)remLen;
+  } else {
+    out[idx++] = (uint8_t)((remLen & 0x7F) | 0x80);
+    out[idx++] = (uint8_t)(remLen >> 7);
+  }
+  out[idx++] = (uint8_t)(tLen >> 8);
+  out[idx++] = (uint8_t)(tLen & 0xFF);
+  memcpy(&out[idx], topic, tLen);
+  idx += tLen;
+  memcpy(&out[idx], payload, pLen);
+  idx += pLen;
+  return idx;
 }

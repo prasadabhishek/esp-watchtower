@@ -195,6 +195,75 @@ void test_netbios_parser(void) {
   TEST_ASSERT_FALSE(parseNetbiosName(sample, sizeof(sample), name, sizeof(name)));
 }
 
+void test_blame_meter(void) {
+  // Normal
+  TEST_ASSERT_EQUAL_INT(BLAME_OK, diagnoseNetworkLag(2, 25, 0));
+  // ISP Down
+  TEST_ASSERT_EQUAL_INT(BLAME_ISP_DOWN, diagnoseNetworkLag(2, -1, 0));
+  TEST_ASSERT_EQUAL_INT(BLAME_ISP_DOWN, diagnoseNetworkLag(2, 25, 1));
+  // ISP Lag
+  TEST_ASSERT_EQUAL_INT(BLAME_ISP_LAG, diagnoseNetworkLag(5, 180, 0));
+  // Router / Wi-Fi Congestion
+  TEST_ASSERT_EQUAL_INT(BLAME_ROUTER_LAG, diagnoseNetworkLag(85, 95, 0));
+  // Both Offline
+  TEST_ASSERT_EQUAL_INT(BLAME_OFFLINE, diagnoseNetworkLag(-1, -1, 0));
+}
+
+void test_outage_claim_receipt(void) {
+  char buf[512];
+  bool ok = formatOutageClaimReceipt(buf, sizeof(buf), "Comcast Xfinity", "ACC-998822", 3, 720, 15, 2, -1);
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_NOT_NULL(strstr(buf, "Comcast Xfinity"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "ACC-998822"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "Recorded Outages: 3"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "Total Failed Checks: 15"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "Latest Outage Duration: 12m 0s"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "Gateway RTT: 2 ms"));
+}
+
+void test_dns_probe_packets(void) {
+  uint8_t pkt[64];
+  size_t len = buildDnsQueryPacket("example.com", 0x1337, pkt, sizeof(pkt));
+  TEST_ASSERT_EQUAL_UINT32(29, len);
+  TEST_ASSERT_EQUAL_HEX8(0x13, pkt[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x37, pkt[1]);
+  TEST_ASSERT_EQUAL_HEX8(7, pkt[12]); // "example" length 7
+
+  // Simulate valid NXDOMAIN response (RCODE = 3, ANCOUNT = 0)
+  uint8_t resp[12] = {0x13, 0x37, 0x81, 0x83, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  uint8_t rcode = 0;
+  uint16_t answers = 99;
+  TEST_ASSERT_TRUE(parseDnsResponse(resp, 12, 0x1337, rcode, answers));
+  TEST_ASSERT_EQUAL_UINT8(3, rcode);
+  TEST_ASSERT_EQUAL_UINT16(0, answers);
+}
+
+void test_micro_ntp_server(void) {
+  uint8_t req[48];
+  memset(req, 0, 48);
+  req[0] = 0x23; // VN=4, Mode=3 (Client)
+  req[2] = 6;    // Poll
+  req[40] = 0xAA; req[47] = 0x55; // Client transmit timestamp
+
+  uint8_t resp[48];
+  TEST_ASSERT_TRUE(buildNtpResponse(req, 1700000000UL, resp));
+  TEST_ASSERT_EQUAL_HEX8(0x24, resp[0]); // VN=4, Mode=4 (Server)
+  TEST_ASSERT_EQUAL_UINT8(2, resp[1]);   // Stratum 2
+  TEST_ASSERT_EQUAL_HEX8(0xAA, resp[24]); // Origin timestamp copied from client transmit
+  TEST_ASSERT_EQUAL_HEX8(0x55, resp[31]);
+}
+
+void test_mqtt_telemetry_packets(void) {
+  uint8_t buf[128];
+  size_t cLen = buildMqttConnectPacket("watchtower", buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_UINT32(24, cLen);
+  TEST_ASSERT_EQUAL_HEX8(0x10, buf[0]); // CONNECT
+
+  size_t pLen = buildMqttPublishPacket("watchtower/status", "{\"online\":26}", buf, sizeof(buf));
+  TEST_ASSERT_TRUE(pLen > 20);
+  TEST_ASSERT_EQUAL_HEX8(0x30, buf[0]); // PUBLISH
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_mac_parser_colon);
@@ -206,5 +275,10 @@ int main(int argc, char **argv) {
   RUN_TEST(test_vip_tagging);
   RUN_TEST(test_outage_configurable_threshold);
   RUN_TEST(test_netbios_parser);
+  RUN_TEST(test_blame_meter);
+  RUN_TEST(test_outage_claim_receipt);
+  RUN_TEST(test_dns_probe_packets);
+  RUN_TEST(test_micro_ntp_server);
+  RUN_TEST(test_mqtt_telemetry_packets);
   return UNITY_END();
 }

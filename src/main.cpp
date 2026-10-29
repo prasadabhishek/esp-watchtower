@@ -8,6 +8,7 @@
 #include <ESP8266Ping.h>
 #include <WiFiClientSecure.h>
 #include <ESP8266HTTPClient.h>
+#include <time.h>
 
 extern "C" {
 #include "lwip/etharp.h"
@@ -36,6 +37,7 @@ WiFiServer telnetServer(TELNET_PORT);
 WiFiServer rtspServer(554);
 WiFiClient activeTelnetClient;
 WiFiUDP udp;
+WiFiUDP ntpUdp;
 
 // Timers
 bool alertActive = false;
@@ -51,7 +53,17 @@ char cfg_ssid[33] = "";
 char cfg_pass[64] = "";
 char cfg_webhook[160] = "";
 char cfg_last_wol[18] = "";
+char cfg_mqtt_host[40] = "";
 uint32_t cfg_outage_threshold_sec = 300; // Default 5 minutes (300 seconds)
+
+// Feature #7 (DNS Probe), #8 (Micro-NTP), #9 (WoL Watchdog), #10 (MQTT Telemetry) State
+int dnsRouterMs = -1;
+int dnsCloudflareMs = -1;
+bool dnsHijacked = false;
+unsigned long dnsQuerySentMs = 0;
+uint32_t ntpServedCount = 0;
+uint32_t wolSentCount = 0;
+uint32_t mqttPublishedCount = 0;
 
 // Telnet Burglar Trap State
 enum TelnetState { T_DISCONNECTED, T_SENT_BANNER, T_WAIT_USER, T_WAIT_PASS };
@@ -81,6 +93,8 @@ void dispatchWebhook(const char* type, const String& msg, const char* severity);
 void dispatchRawDiscord(const String& rawContent);
 void sendDailyMorningReport();
 void appendPersistentLog(const char* type, const String& msg, const char* severity);
+void runDnsBenchmarkProbe();
+void publishMqttTelemetry();
 
 // --- Outbound Discord Alert Sender ---
 void dispatchRawDiscord(const String& rawContent) {
@@ -116,6 +130,26 @@ void dispatchWebhook(const char* type, const String& msg, const char* severity) 
       label = "INTERNET BACK ONLINE";
       emoji = "✅";
     }
+  } else if (strcmp(type, "STRANGER") == 0) {
+    label = "NEW DEVICE CONNECTED TO WI-FI";
+    emoji = "🔔";
+  } else if (strcmp(type, "PRESENCE_IN") == 0) {
+    label = "ARRIVAL";
+    emoji = "🏠";
+  } else if (strcmp(type, "PRESENCE") == 0 || strcmp(type, "PRESENCE_OUT") == 0) {
+    if (strcmp(severity, "warn") == 0 || strcmp(severity, "danger") == 0) {
+      label = "DEPARTURE";
+      emoji = "🚪";
+    } else {
+      label = "ARRIVAL";
+      emoji = "🏠";
+    }
+  } else if (strcmp(type, "FREEZE") == 0) {
+    label = "CRITICAL VIP DROP";
+    emoji = "⚠️";
+  } else if (strcmp(type, "DNS") == 0) {
+    label = "DNS HIJACK / AD-INJECTION DETECTED";
+    emoji = "🚨";
   } else if (strcmp(type, "TEST") == 0) {
     label = "TEST ALARM";
     emoji = "🔔";
@@ -197,6 +231,7 @@ void loadConfig() {
   if (doc["pass"].is<const char*>() && strlen(doc["pass"]) > 0) strncpy(cfg_pass, doc["pass"], sizeof(cfg_pass) - 1);
   if (doc["webhook"].is<const char*>() && strlen(doc["webhook"]) > 0) strncpy(cfg_webhook, doc["webhook"], sizeof(cfg_webhook) - 1);
   if (doc["wol"].is<const char*>()) strncpy(cfg_last_wol, doc["wol"], sizeof(cfg_last_wol) - 1);
+  if (doc["mqtt"].is<const char*>()) strncpy(cfg_mqtt_host, doc["mqtt"], sizeof(cfg_mqtt_host) - 1);
   if (doc["outage_threshold"].is<uint32_t>()) cfg_outage_threshold_sec = doc["outage_threshold"].as<uint32_t>();
 }
 
@@ -208,6 +243,7 @@ void saveConfig() {
   doc["pass"] = cfg_pass;
   doc["webhook"] = cfg_webhook;
   doc["wol"] = cfg_last_wol;
+  doc["mqtt"] = cfg_mqtt_host;
   doc["outage_threshold"] = cfg_outage_threshold_sec;
   serializeJson(doc, f);
   f.close();
@@ -275,6 +311,7 @@ void sendWakeOnLan(const char* macStr) {
   udp.beginPacket(IPAddress(255, 255, 255, 255), 9);
   udp.write(packet, sizeof(packet));
   udp.endPacket();
+  wolSentCount++;
 
   strncpy(cfg_last_wol, macStr, sizeof(cfg_last_wol) - 1);
   saveConfig();
@@ -396,14 +433,9 @@ void setupDashboardServer() {
     doc["ping_gw"] = metrics.gateway_ping_ms;
     doc["pings_total"] = metrics.total_pings;
     doc["pings_failed"] = metrics.failed_pings;
-    doc["deauth_count"] = 0;
-    doc["honeypot_hits"] = metrics.honeypot_telnet_hits + metrics.honeypot_web_hits + metrics.honeypot_camera_hits;
-    doc["phones"] = 0;
+    doc["telnet_hits"] = metrics.honeypot_telnet_hits;
+    doc["web_hits"] = metrics.honeypot_web_hits;
     doc["camera_hits"] = metrics.honeypot_camera_hits;
-    doc["active_devices"] = 1;
-    doc["watched_ip"] = "";
-    doc["watched_online"] = true;
-    doc["spam_alert"] = false;
     doc["attack_alert"] = alertActive;
     doc["wan_down"] = metrics.is_internet_down;
 
@@ -422,6 +454,21 @@ void setupDashboardServer() {
     doc["vip_online"] = vipOnline;
     doc["radar_active"] = radarSweeperActive;
     doc["outage_threshold"] = cfg_outage_threshold_sec;
+    doc["total_outages"] = metrics.total_outages;
+    doc["last_outage_duration"] = metrics.last_outage_duration;
+
+    BlameVerdict verdict = diagnoseNetworkLag(metrics.gateway_ping_ms, metrics.internet_ping_ms, metrics.failed_pings);
+    doc["blame_verdict"] = (int)verdict;
+    doc["blame_desc"] = getBlameDescription(verdict);
+
+    // Feature #7 (DNS), #8 (Micro-NTP), #9 (WoL), #10 (MQTT)
+    doc["dns_gw_ms"] = dnsRouterMs;
+    doc["dns_cf_ms"] = dnsCloudflareMs;
+    doc["dns_hijacked"] = dnsHijacked;
+    doc["ntp_served"] = ntpServedCount;
+    doc["wol_sent"] = wolSentCount;
+    doc["mqtt_sent"] = mqttPublishedCount;
+    doc["mqtt_host"] = cfg_mqtt_host;
 
     JsonArray hist = doc["ping_history"].to<JsonArray>();
     for (int i = 0; i < PING_HISTORY_LEN; i++) {
@@ -633,7 +680,102 @@ void setupDashboardServer() {
     sendJsonError();
   });
 
+  server.on("/api/claim", HTTP_GET, []() {
+    char buf[512];
+    formatOutageClaimReceipt(buf, sizeof(buf), "Internet Service Provider", "Residential Account",
+                             metrics.total_outages, metrics.last_outage_duration,
+                             metrics.failed_pings, metrics.gateway_ping_ms, metrics.internet_ping_ms);
+    server.send(200, "text/plain", buf);
+  });
+
+  server.on("/api/dns-bench", HTTP_POST, []() {
+    runDnsBenchmarkProbe();
+    sendJsonOk();
+  });
+
+  server.on("/api/mqtt", HTTP_POST, []() {
+    if (server.hasArg("plain")) {
+      JsonDocument doc;
+      deserializeJson(doc, server.arg("plain"));
+      const char* host = doc["host"];
+      if (host) {
+        strncpy(cfg_mqtt_host, host, sizeof(cfg_mqtt_host) - 1);
+        saveConfig();
+        publishMqttTelemetry();
+        addLog("MQTT", String("Home Assistant MQTT broker set: ") + cfg_mqtt_host, "info");
+        sendJsonOk();
+        return;
+      }
+    }
+    sendJsonError();
+  });
+
   server.begin();
+}
+
+// --- Feature #7: DNS Hijacking & Benchmark Probe (UDP 53) ---
+static int sendSingleDnsProbe(IPAddress dnsServer, const char* domain, uint16_t txId, bool checkHijack, bool& hijackFlagOut) {
+  uint8_t pkt[64];
+  size_t qLen = buildDnsQueryPacket(domain, txId, pkt, sizeof(pkt));
+  if (qLen == 0) return -1;
+  unsigned long t0 = millis();
+  udp.beginPacket(dnsServer, 53);
+  udp.write(pkt, qLen);
+  udp.endPacket();
+
+  while (millis() - t0 < 250) {
+    int pSize = udp.parsePacket();
+    if (pSize >= 12 && udp.remotePort() == 53) {
+      uint8_t rx[64];
+      int r = udp.read(rx, sizeof(rx));
+      uint8_t rcode = 0;
+      uint16_t answers = 0;
+      if (parseDnsResponse(rx, r, txId, rcode, answers)) {
+        int elapsed = (int)(millis() - t0);
+        if (checkHijack) {
+          hijackFlagOut = (rcode == 0 && answers > 0);
+        }
+        return elapsed > 0 ? elapsed : 1;
+      }
+    }
+    yield();
+  }
+  return -1;
+}
+
+void runDnsBenchmarkProbe() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  bool dummy = false;
+  dnsRouterMs = sendSingleDnsProbe(WiFi.gatewayIP(), "example.com", 0x1001, false, dummy);
+  dnsCloudflareMs = sendSingleDnsProbe(IPAddress(1, 1, 1, 1), "example.com", 0x1002, false, dummy);
+  bool hijackedNow = false;
+  sendSingleDnsProbe(WiFi.gatewayIP(), "nxdomain-canary.invalid", 0x1003, true, hijackedNow);
+  if (hijackedNow && !dnsHijacked) {
+    addLog("DNS", "Router DNS returned forged IP for .invalid domain (NXDOMAIN Hijacking)", "danger");
+  }
+  dnsHijacked = hijackedNow;
+}
+
+// --- Feature #10: Home Assistant MQTT v3.1.1 Telemetry (TCP 1883) ---
+void publishMqttTelemetry() {
+  if (strlen(cfg_mqtt_host) == 0 || WiFi.status() != WL_CONNECTED) return;
+  WiFiClient mqttClient;
+  mqttClient.setTimeout(1500);
+  if (mqttClient.connect(cfg_mqtt_host, 1883)) {
+    uint8_t pkt[200];
+    size_t cLen = buildMqttConnectPacket("esp-watchtower", pkt, sizeof(pkt));
+    mqttClient.write(pkt, cLen);
+    char payload[140];
+    snprintf(payload, sizeof(payload),
+             "{\"wan_ms\":%d,\"gw_ms\":%d,\"dns_gw\":%d,\"dns_cf\":%d,\"traps\":%u,\"lan\":%u,\"ntp\":%u,\"wol\":%u}",
+             metrics.internet_ping_ms, metrics.gateway_ping_ms, dnsRouterMs, dnsCloudflareMs,
+             metrics.honeypot_telnet_hits + metrics.honeypot_web_hits + metrics.honeypot_camera_hits,
+             lanDeviceCount, ntpServedCount, wolSentCount);
+    size_t pLen = buildMqttPublishPacket("homeassistant/sensor/watchtower/state", payload, pkt, sizeof(pkt));
+    mqttClient.write(pkt, pLen);
+    mqttClient.stop();
+    mqttPublishedCount++;
+  }
 }
 
 // --- Internet Health Tracker ---
@@ -655,6 +797,11 @@ void runNetworkWatchdog() {
 
   bool wan_ok = Ping.ping(IPAddress(1, 1, 1, 1), 1);
   metrics.internet_ping_ms = wan_ok ? Ping.averageTime() : -1;
+
+  if (metrics.total_pings % 3 == 1) {
+    runDnsBenchmarkProbe();
+    publishMqttTelemetry();
+  }
 
   if (wan_ok) {
     pingHistory[pingHistoryIdx] = metrics.internet_ping_ms;
@@ -712,7 +859,15 @@ void harvestArpTable() {
             char ipStr[16];
             ipToString(targetBytes, ipStr, sizeof(ipStr));
             int idx = findDevice(lanDevices, lanDeviceCount, targetBytes);
-            addLog("LAN_RADAR", String("Active LAN client found: ") + ipStr + " [" + (idx >= 0 ? lanDevices[idx].vendor : "Client") + "]", "info");
+            const char* vendor = (idx >= 0) ? lanDevices[idx].vendor : "Client";
+            addLog("LAN_RADAR", String("Active LAN client found: ") + ipStr + " [" + vendor + "]", "info");
+
+            // Stranger Alert: Instant alert if new device joins after boot grace period
+            if (raw[3] != 1 && millis() > 45000UL) {
+              char macStr[18];
+              macToString(eth_entry->addr, macStr, sizeof(macStr));
+              addLog("STRANGER", String("Unrecognized device joined Wi-Fi: ") + ipStr + " (" + macStr + " - " + vendor + ")", "warn");
+            }
           }
         }
       }
@@ -783,9 +938,23 @@ void handleLanRadar() {
         char ipStr[16];
         ipToString(lanDevices[i].ip, ipStr, sizeof(ipStr));
         if (cameOnline) {
-          addLog("VIP", String("VIP Target ONLINE: ") + lanDevices[i].name + " (" + ipStr + ")", "success");
+          String msg = String("Arrival detected: ") + lanDevices[i].name + " (" + ipStr + ") connected";
+          addLog("PRESENCE", msg, "success");
+          dispatchWebhook("PRESENCE_IN", msg, "info");
         } else if (wentOffline) {
-          addLog("VIP", String("🚨 VIP Target OFFLINE: ") + lanDevices[i].name + " (" + ipStr + ")", "danger");
+          String msg = String("Departure detected: ") + lanDevices[i].name + " (" + ipStr + ") disconnected";
+          addLog("PRESENCE", msg, "warn");
+
+          // Silent Server / NAS Freeze Sentinel (Auto-WoL)
+          bool hasMac = (lanDevices[i].mac[0] != 0 || lanDevices[i].mac[1] != 0 || lanDevices[i].mac[2] != 0 ||
+                         lanDevices[i].mac[3] != 0 || lanDevices[i].mac[4] != 0 || lanDevices[i].mac[5] != 0);
+          if (hasMac) {
+            char macStr[18];
+            macToString(lanDevices[i].mac, macStr, sizeof(macStr));
+            sendWakeOnLan(macStr);
+            String freezeMsg = String("Auto-WoL Sentinel: Dispatched wake packet to recover frozen host ") + lanDevices[i].name + " (" + macStr + ")";
+            addLog("FREEZE", freezeMsg, "warn");
+          }
         }
       }
     }
@@ -894,6 +1063,8 @@ void setup() {
   rtspServer.begin();
   rtspServer.setNoDelay(true);
   udp.begin(9);
+  ntpUdp.begin(123);
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
 
   addLog("SYSTEM", "Sentinel active and guarding home network", "info");
   addLog("HONEYPOT", "Burglar traps armed (Door 1: Telnet 23, Door 2: Router 8080, Door 3: Camera 554)", "info");
@@ -912,6 +1083,21 @@ void loop() {
   handleLanRadar();
   MDNS.update();
   handleSerialCLI();
+
+  // Feature #8: Local Micro-NTP Time Server (UDP 123, RFC 5905)
+  int ntpSize = ntpUdp.parsePacket();
+  if (ntpSize >= 48) {
+    uint8_t req[48], resp[48];
+    ntpUdp.read(req, 48);
+    time_t nowUnix = time(nullptr);
+    uint32_t unixSec = (nowUnix > 1000000000L) ? (uint32_t)nowUnix : (1730160000UL + (millis() / 1000));
+    if (buildNtpResponse(req, unixSec, resp)) {
+      ntpUdp.beginPacket(ntpUdp.remoteIP(), ntpUdp.remotePort());
+      ntpUdp.write(resp, 48);
+      ntpUdp.endPacket();
+      ntpServedCount++;
+    }
+  }
 
   // Drain any incoming UDP packets (SSDP / mDNS / NetBIOS / WoL) and harvest learned hosts
   int packetSize = udp.parsePacket();

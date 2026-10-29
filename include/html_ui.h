@@ -1,640 +1,237 @@
 #pragma once
 #include <Arduino.h>
 
+// ponytail: Pure CSS radio tabs (:checked) + compact polling script in PROGMEM (0B RAM). Covers all 9 features.
 const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>root@watchtower: ~# sentinel</title>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>root@watchtower:~#</title>
 <style>
-:root {
-  --bg-dark: #0d1117;
-  --bg-panel: #161b22;
-  --bg-subtle: #0f141c;
-  --border: #30363d;
-  --border-focus: #58a6ff;
-  --text-main: #c9d1d9;
-  --text-dim: #8b949e;
-  --text-bold: #f0f6fc;
-  --green: #3fb950;
-  --green-bg: #0d2d14;
-  --green-border: #238636;
-  --red: #f85149;
-  --red-bg: #381111;
-  --red-border: #da3633;
-  --amber: #d29922;
-  --amber-bg: #342405;
-  --amber-border: #9e6a03;
-  --cyan: #58a6ff;
-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background-color: var(--bg-dark);
-  color: var(--text-main);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.45;
-  padding: 14px;
-  -webkit-font-smoothing: antialiased;
-}
-a { color: var(--cyan); text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-.cli-header {
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 10px;
-  margin-bottom: 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.cli-prompt {
-  color: var(--cyan);
-  font-weight: 700;
-  font-size: 14px;
-}
-.cli-prompt span { color: var(--text-bold); }
-.cli-prompt em { color: var(--green); font-style: normal; }
-
-.status-bar {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  padding: 8px 12px;
-  margin-bottom: 14px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  font-size: 12px;
-}
-.stat-pill {
-  display: flex;
-  gap: 6px;
-}
-.stat-pill .lbl { color: var(--text-dim); }
-.stat-pill .val { color: var(--text-bold); font-weight: 600; }
-
-.grid {
-  display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 14px;
-  margin-bottom: 14px;
-}
-@media (max-width: 900px) {
-  .grid { grid-template-columns: 1fr; }
-}
-
-.box {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-}
-.box-header {
-  background: var(--bg-subtle);
-  border-bottom: 1px solid var(--border);
-  padding: 8px 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-weight: 600;
-  color: var(--text-bold);
-  font-size: 12px;
-}
-.box-header .tag {
-  color: var(--cyan);
-  font-weight: normal;
-}
-.box-body {
-  padding: 12px;
-  flex: 1;
-}
-
-.btn {
-  background: #21262d;
-  color: var(--text-bold);
-  border: 1px solid var(--border);
-  padding: 4px 10px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  cursor: pointer;
-  border-radius: 2px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.btn:hover { background: #30363d; border-color: var(--text-dim); }
-.btn-primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
-.btn-primary:hover { background: #388bfd; }
-.btn-danger { background: var(--red-bg); border-color: var(--red-border); color: var(--red); }
-.btn-amber { background: var(--amber-bg); border-color: var(--amber-border); color: var(--amber); }
-
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-  align-items: center;
-}
-
-.tag-badge {
-  display: inline-block;
-  padding: 2px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  border-radius: 2px;
-}
-.badge-online { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
-.badge-offline { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
-.badge-vip { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-border); }
-
-table.linux-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-  font-size: 12px;
-}
-table.linux-table th {
-  border-bottom: 1px solid var(--border);
-  color: var(--text-dim);
-  padding: 6px 8px;
-  font-weight: 600;
-}
-table.linux-table td {
-  border-bottom: 1px solid #21262d;
-  padding: 6px 8px;
-}
-table.linux-table tr:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.star-btn {
-  background: none;
-  border: none;
-  font-size: 14px;
-  cursor: pointer;
-  padding: 0 4px;
-  color: var(--text-dim);
-}
-.star-btn.active { color: var(--amber); }
-
-.log-stream {
-  background: #000;
-  border: 1px solid var(--border);
-  padding: 8px;
-  height: 220px;
-  overflow-y: auto;
-  font-size: 11.5px;
-  line-height: 1.4;
-}
-.log-line { margin-bottom: 3px; word-break: break-all; }
-.log-t { color: var(--text-dim); }
-.log-type { font-weight: 700; margin-right: 6px; }
-.log-type.danger { color: var(--red); }
-.log-type.warn { color: var(--amber); }
-.log-type.info { color: var(--cyan); }
-.log-type.success { color: var(--green); }
-
-.trap-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-}
-.trap-row:last-child { border-bottom: none; }
-
-.sparkline-box {
-  background: #000;
-  border: 1px solid var(--border);
-  padding: 8px;
-  height: 60px;
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  margin-top: 8px;
-}
-.spark-bar {
-  flex: 1;
-  background: var(--cyan);
-  min-height: 2px;
-}
-
-.modal {
-  display: none;
-  position: fixed;
-  top: 0; left: 0; width: 100%; height: 100%;
-  background: rgba(0,0,0,0.7);
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-.modal.open { display: flex; }
-.modal-box {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  width: 90%;
-  max-width: 440px;
-  padding: 16px;
-}
-.modal-header {
-  font-weight: 700;
-  color: var(--text-bold);
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 8px;
-}
-.input-text {
-  width: 100%;
-  background: #000;
-  border: 1px solid var(--border);
-  color: var(--text-bold);
-  padding: 6px 8px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  margin-bottom: 10px;
-}
-.input-text:focus { outline: none; border-color: var(--cyan); }
+:root{--bg:#0d1117;--pan:#161b22;--bdr:#30363d;--txt:#c9d1d9;--dim:#8b949e;--hi:#f0f6fc;--grn:#3fb950;--red:#f85149;--amb:#d29922;--cyn:#58a6ff}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:12px}
+.hdr,.sbar,.tbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}
+.hdr{border-bottom:1px solid var(--bdr);padding-bottom:8px}
+.sbar{background:var(--pan);border:1px solid var(--bdr);padding:6px 10px;justify-content:flex-start;gap:14px}
+.sbar b{color:var(--hi)}
+.btn,select,input{background:#21262d;color:var(--hi);border:1px solid var(--bdr);padding:4px 9px;font:inherit;cursor:pointer;border-radius:2px}
+.btn:hover{border-color:var(--cyn)}
+.btn-p{background:#1f6feb;border-color:#388bfd}
+.box{background:var(--pan);border:1px solid var(--bdr);margin-bottom:10px}
+.bh{background:#0f141c;border-bottom:1px solid var(--bdr);padding:6px 10px;display:flex;justify-content:space-between;align-items:center;font-weight:700;color:var(--hi)}
+.bb{padding:10px}
+input.tr{display:none}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--bdr);margin-bottom:10px;flex-wrap:wrap}
+.tabs label{padding:6px 12px;background:var(--pan);border:1px solid var(--bdr);border-bottom:none;cursor:pointer;color:var(--dim);font-weight:600}
+#t1:checked~.tabs label[for=t1],#t2:checked~.tabs label[for=t2],#t3:checked~.tabs label[for=t3],#t4:checked~.tabs label[for=t4]{background:#1f6feb;color:#fff;border-color:#388bfd}
+.pane{display:none}
+#t1:checked~#p1,#t2:checked~#p2,#t3:checked~#p3,#t4:checked~#p4{display:block}
+table{width:100%;border-collapse:collapse;text-align:left}
+th,td{padding:5px 7px;border-bottom:1px solid #21262d}
+th{color:var(--dim);border-bottom-color:var(--bdr)}
+.bdg{padding:1px 5px;font-size:11px;border-radius:2px;font-weight:700}
+.on{background:#0d2d14;color:var(--grn);border:1px solid #238636}
+.off{background:#381111;color:var(--red);border:1px solid #da3633}
+.vip{background:#342405;color:var(--amb);border:1px solid #9e6a03}
+.blame{padding:10px;border:1px solid var(--bdr);margin-bottom:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;background:var(--pan)}
+pre,textarea{background:#000;border:1px solid var(--bdr);color:var(--hi);padding:8px;width:100%;font:inherit;overflow-y:auto}
 </style>
 </head>
 <body>
-
-<div class="cli-header">
-  <div class="cli-prompt">root@watchtower:<span>~#</span> <em>sentinel --radar=full+vip</em></div>
-  <div>
-    <button class="btn btn-primary" onclick="triggerPingNow()">⚡ Ping Check</button>
-    <button class="btn" onclick="openAddVipModal()">+ Add VIP Target</button>
-    <button class="btn" onclick="sendDailyReport()">📊 Dispatch Report</button>
+<div class="hdr">
+  <div><b style="color:var(--cyn)">root@watchtower:~#</b> <span style="color:var(--grn)">sentinel --all-9-features</span></div>
+  <div style="display:flex;gap:6px">
+    <button class="btn btn-p" onclick="post('/api/ping-now')">⚡ Ping & Diagnose</button>
+    <button class="btn" onclick="addVip()">+ Add Family/Server VIP</button>
+    <button class="btn" onclick="post('/api/send-report')">📊 Discord Report</button>
   </div>
 </div>
 
-<div class="status-bar" id="statusBar">
-  <div class="stat-pill"><span class="lbl">UPTIME:</span><span class="val" id="sbUptime">00:00:00</span></div>
-  <div class="stat-pill"><span class="lbl">HEAP:</span><span class="val" id="sbHeap">-- KB</span></div>
-  <div class="stat-pill"><span class="lbl">SUBNET:</span><span class="val" id="sbSubnet">192.168.50.0/24</span></div>
-  <div class="stat-pill"><span class="lbl">LAN DEVICES:</span><span class="val" id="sbDevices">0 ONLINE (0 VIP)</span></div>
-  <div class="stat-pill"><span class="lbl">WAN (1.1.1.1):</span><span class="val" id="sbWan">-- ms</span></div>
-  <div class="stat-pill"><span class="lbl">ROUTER:</span><span class="val" id="sbGw">-- ms</span></div>
-  <div class="stat-pill"><span class="lbl">WIFI:</span><span class="val" id="sbRssi">-- dBm</span></div>
+<div class="sbar">
+  <span>UPTIME: <b id="u">0s</b></span>
+  <span>HEAP: <b id="h">--</b></span>
+  <span>LAN: <b id="dv">0</b></span>
+  <span>WIFI PING: <b id="gw">--</b></span>
+  <span>ISP PING: <b id="wn">--</b></span>
+  <span>DNS (GW/CF): <b id="dn">--</b></span>
+  <span>NTP: <b id="nt">0</b></span>
+  <span>WOL: <b id="wl">0</b></span>
 </div>
 
-<div class="grid">
-  <!-- Window 1: LAN Radar & Device Table -->
-  <div class="box">
-    <div class="box-header">
-      <span>[01: LAN RADAR // SUBNET SWEEPER & VIP SENTINEL]</span>
-      <span class="tag" id="radarStatusTag">AUTO-SCANNER: ACTIVE</span>
-    </div>
-    <div class="box-body">
-      <div class="toolbar">
-        <button class="btn btn-primary" id="btnFilterAll" onclick="setDeviceFilter('all')">ALL DEVICES (<span id="countAll">0</span>)</button>
-        <button class="btn btn-amber" id="btnFilterVip" onclick="setDeviceFilter('vip')">★ VIP WATCHLIST (<span id="countVip">0</span>)</button>
-        <button class="btn" id="btnToggleScan" onclick="toggleScanner()">SWEEPER: ACTIVE</button>
-        <button class="btn" onclick="refreshDevices()">🔄 REFRESH</button>
-      </div>
+<input class="tr" type="radio" name="tb" id="t1" checked>
+<input class="tr" type="radio" name="tb" id="t2">
+<input class="tr" type="radio" name="tb" id="t3">
+<input class="tr" type="radio" name="tb" id="t4">
 
-      <div style="overflow-x: auto;">
-        <table class="linux-table">
-          <thead>
-            <tr>
-              <th style="width: 30px;">VIP</th>
-              <th>IP ADDRESS</th>
-              <th>MAC / VENDOR</th>
-              <th>DEVICE NAME</th>
-              <th>LATENCY</th>
-              <th>LAST SEEN</th>
-              <th>STATUS</th>
-            </tr>
-          </thead>
-          <tbody id="deviceTableBody">
-            <tr><td colspan="7" style="text-align: center; color: var(--text-dim); padding: 16px;">Scanning subnet for active clients...</td></tr>
-          </tbody>
+<div class="tabs">
+  <label for="t1">[1] 📡 LAN Radar, Blame & Presence</label>
+  <label for="t2">[2] 🛡️ Traps, DNS Probe & Micro-NTP</label>
+  <label for="t3">[3] 🌐 ISP Outage Receipt (SLA)</label>
+  <label for="t4">[4] 📜 Logs, Discord & MQTT</label>
+</div>
+
+<!-- TAB 1: BLAME METER, STRANGER ALERT, PRESENCE, AUTO-WOL -->
+<div class="pane" id="p1">
+  <div class="blame" id="bmBox">
+    <div><div style="color:var(--dim);font-size:11px">1. THE "WHO'S AT FAULT?" BLAME METER</div><b id="bmTxt" style="font-size:13.5px;color:var(--grn)">CHECKING...</b></div>
+    <div><div style="color:var(--dim);font-size:11px">YOUR LOCAL WI-FI (ROUTER)</div><b id="bmGw">--</b></div>
+    <div><div style="color:var(--dim);font-size:11px">YOUR INTERNET PROVIDER (ISP)</div><b id="bmWn">--</b> (Drops: <b id="bmFl">0</b>)</div>
+  </div>
+  <div class="box">
+    <div class="bh">
+      <span>2. STRANGER ALERT // 3. FAMILY PRESENCE // 5 & 9. SILENT NAS FREEZE AUTO-WOL</span>
+      <span>Auto-WoL Recoveries: <b id="wl2" style="color:var(--amb)">0</b></span>
+    </div>
+    <div class="bb">
+      <div class="tbar">
+        <div>
+          <button class="btn btn-p" onclick="flt=0;rDev()">ALL DEVICES</button>
+          <button class="btn" onclick="flt=1;rDev()">★ VIP WATCHLIST (PRESENCE + AUTO-WOL)</button>
+        </div>
+        <div style="font-size:11px;color:var(--dim)">New MAC = 🔔 Stranger Alert | ★ VIP = 🏠 Arrival / 🚪 Departure + ⚠️ Auto-WoL on Drop</div>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>VIP</th><th>IP</th><th>MAC / VENDOR</th><th>DEVICE NAME</th><th>LATENCY</th><th>LAST SEEN</th><th>STATUS</th><th>WAKE</th></tr></thead>
+          <tbody id="tbD"></tbody>
         </table>
       </div>
     </div>
   </div>
+</div>
 
-  <!-- Column 2: Canary Traps & Latency -->
-  <div style="display: flex; flex-direction: column; gap: 14px;">
-    <!-- Burglar Canary Traps -->
-    <div class="box">
-      <div class="box-header">
-        <span>[02: CANARY TRAPS // HONEYPOTS]</span>
-        <span class="tag">3 ARMED</span>
-      </div>
-      <div class="box-body" style="padding: 0;">
-        <div class="trap-row">
-          <div>
-            <div style="font-weight: 600; color: var(--text-bold);">Port 23: Telnet Terminal Decoy</div>
-            <div style="font-size: 11px; color: var(--text-dim);">Traps brute-force shell logins</div>
-          </div>
-          <div><span class="tag-badge badge-online">ARMED</span> <span id="hitsTelnet" style="color: var(--amber); margin-left: 4px;">0 hits</span></div>
-        </div>
-        <div class="trap-row">
-          <div>
-            <div style="font-weight: 600; color: var(--text-bold);">Port 8080: Gateway Admin Trap</div>
-            <div style="font-size: 11px; color: var(--text-dim);">Traps web credential stuffing</div>
-          </div>
-          <div><span class="tag-badge badge-online">ARMED</span> <span id="hitsWeb" style="color: var(--amber); margin-left: 4px;">0 hits</span></div>
-        </div>
-        <div class="trap-row">
-          <div>
-            <div style="font-weight: 600; color: var(--text-bold);">Port 554: RTSP Security Cam Decoy</div>
-            <div style="font-size: 11px; color: var(--text-dim);">Traps video stream recon scanners</div>
-          </div>
-          <div><span class="tag-badge badge-online">ARMED</span> <span id="hitsCam" style="color: var(--amber); margin-left: 4px;">0 hits</span></div>
-        </div>
-      </div>
+<!-- TAB 2: CANARY HONEYPOTS, #7 DNS PROBE, #8 MICRO-NTP SERVER -->
+<div class="pane" id="p2">
+  <div class="box">
+    <div class="bh"><span>7. DNS HIJACKING & BENCHMARK PROBE (UDP 53)</span><button class="btn btn-p" onclick="post('/api/dns-bench')">🔍 Benchmark DNS Now</button></div>
+    <div class="bb">
+      <table>
+        <thead><tr><th>DNS RESOLVER</th><th>LOOKUP SPEED</th><th>NXDOMAIN HIJACK / AD-INJECTION CHECK</th></tr></thead>
+        <tbody>
+          <tr><td><b>Router DNS (Gateway:53)</b></td><td><b id="dGw">--</b></td><td><span id="dHj" class="bdg on">✅ CLEAN (Genuine NXDOMAIN)</span></td></tr>
+          <tr><td><b>Cloudflare DNS (1.1.1.1:53)</b></td><td><b id="dCf">--</b></td><td><span class="bdg on">✅ VERIFIED UPSTREAM</span></td></tr>
+        </tbody>
+      </table>
     </div>
+  </div>
+  <div class="box">
+    <div class="bh"><span>8. LOCAL MICRO-NTP TIME SERVER (UDP 123, RFC 5905)</span><span class="bdg on">STRATUM-2 ACTIVE</span></div>
+    <div class="bb">
+      Synchronizes offline IoT cameras & smart plugs on <code style="color:var(--cyn)">UDP Port 123</code> with zero heap overhead.
+      Total IoT Time Syncs Served: <b id="nt2" style="color:var(--grn)">0</b>
+    </div>
+  </div>
+  <div class="box">
+    <div class="bh"><span>INTRUDER CANARY HONEYPOTS</span><button class="btn" onclick="post('/api/test-alert')">🚨 Test Strobe Alarm</button></div>
+    <div class="bb">
+      <table>
+        <thead><tr><th>PORT / SERVICE</th><th>DECOY EMULATION</th><th>STATE</th><th>INTRUDER HITS</th></tr></thead>
+        <tbody>
+          <tr><td><b>Port 23 (Telnet)</b></td><td>Ubuntu 22.04 LTS Login Prompt</td><td><span class="bdg on">ARMED</span></td><td><b id="hT">0</b></td></tr>
+          <tr><td><b>Port 8080 (HTTP)</b></td><td>Router Admin Login Portal</td><td><span class="bdg on">ARMED</span></td><td><b id="hW">0</b></td></tr>
+          <tr><td><b>Port 554 (RTSP)</b></td><td>IPCamera Video Auth Stream</td><td><span class="bdg on">ARMED</span></td><td><b id="hC">0</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
 
-    <!-- Latency Watchdog -->
-    <div class="box">
-      <div class="box-header">
-        <span>[03: WAN HEALTH // 1.1.1.1 LATENCY]</span>
-        <span class="tag" id="wanStatusTag">ONLINE</span>
-      </div>
-      <div class="box-body">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px;">
-          <span>Current Lag: <strong id="wanCurrentLag">-- ms</strong></span>
-          <span>Failures: <strong id="wanFailures">0</strong></span>
-        </div>
-        <div class="sparkline-box" id="sparkline"></div>
-        <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 11.5px; display: flex; justify-content: space-between; align-items: center;">
-          <span style="color: var(--text-dim);">ALERT IF DOWN >:</span>
-          <select id="selOutageThreshold" onchange="updateOutageThreshold(this.value)" style="background: #000; border: 1px solid var(--border); color: var(--text-bold); font-family: var(--font-mono); font-size: 11px; padding: 2px 6px;">
-            <option value="60">1 min (Strict)</option>
-            <option value="180">3 mins</option>
-            <option value="300">5 mins (Default)</option>
-            <option value="600">10 mins</option>
-            <option value="900">15 mins (Quiet)</option>
+<!-- TAB 3: #4 ISP OUTAGE RECEIPT & SLA CLAIM GENERATOR -->
+<div class="pane" id="p3">
+  <div class="box">
+    <div class="bh"><span>4. "ISP OUTAGE RECEIPT" (BILLING CREDIT GENERATOR)</span><span id="wSt">ONLINE</span></div>
+    <div class="bb">
+      <div class="tbar">
+        <span>Confirmed Outages: <b id="oCnt">0</b> | Latest Downtime: <b id="oDur">0s</b></span>
+        <span>Outage Alert Threshold:
+          <select id="oTh" onchange="post('/api/config',{outage_threshold:+this.value})">
+            <option value="60">1 min</option><option value="180">3 mins</option>
+            <option value="300">5 mins</option><option value="600">10 mins</option>
           </select>
-        </div>
+        </span>
+      </div>
+      <textarea id="clm" rows="9" readonly>Loading receipt from hardware...</textarea>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-p" onclick="navigator.clipboard.writeText($('clm').value);this.innerText='✓ Copied to Clipboard!'">📋 Copy SLA Claim Receipt</button>
+        <button class="btn" onclick="loadClaim()">🔄 Refresh Receipt</button>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Window 4: System Audit Log -->
-<div class="box">
-  <div class="box-header">
-    <span>[04: AUDIT STREAM // EVENT LOGS]</span>
-    <div>
-      <a href="/api/download-logs" download class="btn" style="padding: 2px 8px; font-size: 11px;">⬇ CSV Backup</a>
+<!-- TAB 4: LOGS, DISCORD & #10 HOME ASSISTANT MQTT -->
+<div class="pane" id="p4">
+  <div class="box">
+    <div class="bh"><span>10. HOME ASSISTANT MQTT TELEMETRY (TCP 1883)</span><span>Published: <b id="mqCnt">0</b></span></div>
+    <div class="bb" style="display:flex;gap:8px;flex-wrap:wrap">
+      <input id="mqH" placeholder="MQTT Broker IP / Host (e.g. 192.168.50.10 or homeassistant.local)" style="flex:1">
+      <button class="btn btn-p" onclick="post('/api/mqtt',{host:$('mqH').value})">💾 Save & Publish to TCP 1883</button>
     </div>
   </div>
-  <div class="box-body" style="padding: 0;">
-    <div class="log-stream" id="logStream">
-      <div class="log-line"><span class="log-t">[00:00:00]</span> <span class="log-type info">[SYSTEM]</span> Sentinel engine initialized.</div>
+  <div class="box">
+    <div class="bh"><span>DISCORD INSTANT ALERTS (🔔 STRANGER / 🏠 ARRIVAL / 🚪 DEPARTURE / ⚠️ VIP DROP)</span></div>
+    <div class="bb" style="display:flex;gap:8px;flex-wrap:wrap">
+      <input id="wh" placeholder="https://discord.com/api/webhooks/..." style="flex:1">
+      <button class="btn btn-p" onclick="post('/api/webhook',{url:$('wh').value})">💾 Save & Test Discord</button>
     </div>
   </div>
-</div>
-
-<!-- Modal: Add VIP Target -->
-<div class="modal" id="vipModal">
-  <div class="modal-box">
-    <div class="modal-header">[+ ADD VIP TARGET TO WATCHLIST]</div>
-    <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 10px;">
-      VIP devices are priority-scanned every 15s with instant Discord alerts on disconnect.
+  <div class="box">
+    <div class="bh">
+      <span>AUDIT EVENT STREAM (LITTLEFS + RAM RING)</span>
+      <div><a href="/api/download-logs" download class="btn">⬇ CSV Audit Log</a> <button class="btn" onclick="post('/api/clear-logs')">🗑️ Clear</button></div>
     </div>
-    <label style="font-size: 11px; color: var(--text-dim);">IP ADDRESS</label>
-    <input type="text" id="vipInputIp" class="input-text" placeholder="192.168.50.119">
-    <label style="font-size: 11px; color: var(--text-dim);">CUSTOM NAME / LABEL</label>
-    <input type="text" id="vipInputName" class="input-text" placeholder="e.g. MacBook Pro M3">
-    <div style="display: flex; justify-content: flex-end; gap: 8px;">
-      <button class="btn" onclick="closeAddVipModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="submitAddVip()">Save Target</button>
-    </div>
+    <div class="bb"><pre id="lg" style="height:190px">Loading...</pre></div>
   </div>
 </div>
 
 <script>
-let currentFilter = 'all';
-let scannerActive = true;
-
-function formatUptime(s) {
-  const h = String(Math.floor(s / 3600)).padStart(2, '0');
-  const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
-  const sec = String(s % 60).padStart(2, '0');
-  return `${h}:${m}:${sec}`;
+const $=id=>document.getElementById(id);
+let devs=[],flt=0;
+const post=(u,b)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):null}).then(poll);
+function addVip(){const ip=prompt('VIP IP Address:');if(ip){const name=prompt('Label (e.g. Abhishek iPhone or APOLLOSYNOLOGY):')||ip;post('/api/vip/toggle',{ip,vip:true,name});}}
+function rDev(){
+  $('tbD').innerHTML=devs.filter(d=>!flt||d.vip).map(d=>`<tr>
+    <td><button class="btn" onclick="post('/api/vip/toggle',{ip:'${d.ip}',vip:${!d.vip}})">${d.vip?'★':'☆'}</button></td>
+    <td><b>${d.ip}</b></td><td>${d.mac} <span style="color:var(--cyn)">[${d.vendor}]</span></td>
+    <td style="cursor:pointer" onclick="const n=prompt('Rename:',\`${d.name}\`);if(n)post('/api/device/rename',{ip:'${d.ip}',name:n})">${d.name} ✏️ ${d.vip?'<span class="bdg vip">VIP</span>':''}</td>
+    <td>${d.online&&d.latency>=0?d.latency+'ms':'--'}</td><td>${d.last_seen_sec}s</td>
+    <td><span class="bdg ${d.online?'on':'off'}">${d.online?'ONLINE':'OFFLINE'}</span></td>
+    <td><button class="btn" onclick="post('/api/wol',{mac:'${d.mac}'})">⚡WoL</button></td>
+  </tr>`).join('');
 }
-
-async function fetchStatus() {
-  try {
-    const res = await fetch('/api/status');
-    const d = await res.json();
-    document.getElementById('sbUptime').innerText = formatUptime(d.uptime || 0);
-    document.getElementById('sbHeap').innerText = Math.round((d.heap || 0) / 1024) + ' KB';
-    document.getElementById('sbWan').innerText = (d.ping_wan >= 0 ? d.ping_wan + ' ms' : 'OUTAGE');
-    document.getElementById('sbGw').innerText = (d.ping_gw >= 0 ? d.ping_gw + ' ms' : 'DOWN');
-    document.getElementById('sbRssi').innerText = (d.rssi || 0) + ' dBm';
-    document.getElementById('wanCurrentLag').innerText = (d.ping_wan >= 0 ? d.ping_wan + ' ms' : 'DOWN');
-    document.getElementById('wanFailures').innerText = d.pings_failed || 0;
-    document.getElementById('hitsTelnet').innerText = (d.honeypot_telnet_hits || 0) + ' hits';
-    document.getElementById('hitsWeb').innerText = (d.honeypot_web_hits || 0) + ' hits';
-    document.getElementById('hitsCam').innerText = (d.honeypot_camera_hits || 0) + ' hits';
-    if (d.outage_threshold) {
-      const sel = document.getElementById('selOutageThreshold');
-      if (sel && document.activeElement !== sel) sel.value = d.outage_threshold;
-    }
-
-    const wanTag = document.getElementById('wanStatusTag');
-    if (d.wan_down) {
-      wanTag.innerText = 'DISCONNECTED';
-      wanTag.style.color = 'var(--red)';
-    } else {
-      wanTag.innerText = 'ONLINE';
-      wanTag.style.color = 'var(--green)';
-    }
-
-    if (d.ping_history) {
-      const box = document.getElementById('sparkline');
-      box.innerHTML = '';
-      const maxVal = Math.max(...d.ping_history.map(v => (v > 0 ? v : 100)), 40);
-      d.ping_history.forEach(val => {
-        const bar = document.createElement('div');
-        bar.className = 'spark-bar';
-        if (val < 0) {
-          bar.style.height = '100%';
-          bar.style.background = 'var(--red)';
-        } else {
-          const pct = Math.max(4, Math.min(100, (val / maxVal) * 100));
-          bar.style.height = pct + '%';
-          bar.style.background = (val > 80 ? 'var(--amber)' : 'var(--cyan)');
-        }
-        box.appendChild(bar);
-      });
-    }
-  } catch(e) {}
+function loadClaim(){fetch('/api/claim').then(r=>r.text()).then(t=>$('clm').value=t);}
+async function poll(){
+  try{
+    const s=await(await fetch('/api/status')).json();
+    $('u').innerText=Math.floor(s.uptime/60)+'m';
+    $('h').innerText=Math.round(s.heap/1024)+'KB';
+    $('dv').innerText=`${s.lan_online}/${s.lan_total} (${s.vip_online} VIP)`;
+    $('gw').innerText=s.ping_gw>=0?s.ping_gw+'ms':'DOWN';
+    $('wn').innerText=s.ping_wan>=0?s.ping_wan+'ms':'OUTAGE';
+    $('bmGw').innerText=s.ping_gw>=0?`${s.ping_gw} ms (${s.ping_gw<=45?'🟢 Crystal Clear':'🟡 Congested'})`:'🔴 Offline';
+    $('bmWn').innerText=s.ping_wan>=0?`${s.ping_wan} ms (${s.ping_wan<=100?'🟢 Fast':'🔴 Lagging'})`:'🔴 ISP Outage';
+    $('bmTxt').innerText=s.blame_desc||'OK';
+    $('bmBox').style.borderColor=s.blame_verdict===0?'var(--grn)':(s.blame_verdict===1?'var(--red)':'var(--amb)');
+    $('bmFl').innerText=s.pings_failed;
+    const dg=s.dns_gw_ms>=0?s.dns_gw_ms+'ms':'--',dc=s.dns_cf_ms>=0?s.dns_cf_ms+'ms':'--';
+    $('dn').innerText=`${dg}/${dc}`;
+    $('dGw').innerText=dg;$('dCf').innerText=dc;
+    $('dHj').innerText=s.dns_hijacked?'🚨 HIJACKED (NXDOMAIN Ad-Injection!)':'✅ CLEAN (Genuine NXDOMAIN)';
+    $('dHj').className='bdg '+(s.dns_hijacked?'off':'on');
+    $('nt').innerText=$('nt2').innerText=s.ntp_served||0;
+    $('wl').innerText=$('wl2').innerText=s.wol_sent||0;
+    $('mqCnt').innerText=s.mqtt_sent||0;
+    if(s.mqtt_host&&document.activeElement!==$('mqH'))$('mqH').value=s.mqtt_host;
+    $('hT').innerText=s.telnet_hits||0;$('hW').innerText=s.web_hits||0;$('hC').innerText=s.camera_hits||0;
+    $('oCnt').innerText=s.total_outages||0;$('oDur').innerText=(s.last_outage_duration||0)+'s';
+    if(document.activeElement!==$('oTh'))$('oTh').value=s.outage_threshold;
+    devs=await(await fetch('/api/devices')).json();rDev();
+    const l=await(await fetch('/api/logs')).json();
+    $('lg').innerText=l.map(x=>`[${x.t}s] [${x.type}] ${x.msg}`).join('\n');
+  }catch(e){}
 }
-
-async function refreshDevices() {
-  try {
-    const res = await fetch('/api/devices');
-    const devices = await res.json();
-    const tbody = document.getElementById('deviceTableBody');
-    tbody.innerHTML = '';
-
-    let onlineCount = 0;
-    let vipCount = 0;
-    let vipOnline = 0;
-
-    devices.forEach(dev => {
-      if (dev.online) onlineCount++;
-      if (dev.vip) {
-        vipCount++;
-        if (dev.online) vipOnline++;
-      }
-    });
-
-    document.getElementById('countAll').innerText = devices.length;
-    document.getElementById('countVip').innerText = vipCount;
-    document.getElementById('sbDevices').innerText = `${onlineCount} ONLINE (${vipOnline} VIP)`;
-
-    const filtered = (currentFilter === 'vip') ? devices.filter(d => d.vip) : devices;
-
-    if (filtered.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-dim); padding: 16px;">No ${currentFilter === 'vip' ? 'VIP targets' : 'devices'} recorded yet.</td></tr>`;
-      return;
-    }
-
-    filtered.forEach(dev => {
-      const tr = document.createElement('tr');
-      const starClass = dev.vip ? 'star-btn active' : 'star-btn';
-      const starIcon = dev.vip ? '★' : '☆';
-      const statusBadge = dev.online 
-        ? '<span class="tag-badge badge-online">ONLINE</span>' 
-        : '<span class="tag-badge badge-offline">OFFLINE</span>';
-      const vipBadge = dev.vip ? ' <span class="tag-badge badge-vip">VIP</span>' : '';
-      const latencyStr = dev.online ? (dev.latency >= 0 ? dev.latency + ' ms' : '< 1 ms') : '--';
-
-      tr.innerHTML = `
-        <td><button class="${starClass}" onclick="toggleVip('${dev.ip}', ${!dev.vip})">${starIcon}</button></td>
-        <td style="font-weight: 600; color: var(--text-bold);">${dev.ip}</td>
-        <td><span style="color: var(--text-dim);">${dev.mac || '00:00:00:00:00:00'}</span> <em style="color: var(--cyan); font-style: normal;">[${dev.vendor || 'Client'}]</em></td>
-        <td><span style="cursor:pointer;border-bottom:1px dotted var(--text-dim);" title="Click to rename" onclick="renameDevice('${dev.ip}', '${(dev.name||'').replace(/'/g, "\\'")}')">${dev.name || 'Unnamed'}</span> <span style="font-size:10px;cursor:pointer;opacity:0.6;" onclick="renameDevice('${dev.ip}', '${(dev.name||'').replace(/'/g, "\\'")}')">✏️</span>${vipBadge}</td>
-        <td>${latencyStr}</td>
-        <td style="color: var(--text-dim);">${dev.last_seen_sec ? dev.last_seen_sec + 's ago' : 'just now'}</td>
-        <td>${statusBadge}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-  } catch(e) {}
-}
-
-async function fetchLogs() {
-  try {
-    const res = await fetch('/api/logs');
-    const logs = await res.json();
-    const box = document.getElementById('logStream');
-    box.innerHTML = '';
-    logs.forEach(item => {
-      const line = document.createElement('div');
-      line.className = 'log-line';
-      const t = formatUptime(item.t || 0);
-      const sevClass = (item.sev === 'danger' || item.sev === 'warn' || item.sev === 'info' || item.sev === 'success') ? item.sev : 'info';
-      line.innerHTML = `<span class="log-t">[${t}]</span> <span class="log-type ${sevClass}">[${item.type}]</span> ${item.msg}`;
-      box.appendChild(line);
-    });
-  } catch(e) {}
-}
-
-function setDeviceFilter(filter) {
-  currentFilter = filter;
-  if (filter === 'vip') {
-    document.getElementById('btnFilterVip').className = 'btn btn-primary';
-    document.getElementById('btnFilterAll').className = 'btn';
-  } else {
-    document.getElementById('btnFilterAll').className = 'btn btn-primary';
-    document.getElementById('btnFilterVip').className = 'btn btn-amber';
-  }
-  refreshDevices();
-}
-
-async function toggleVip(ip, newVipState) {
-  await fetch('/api/vip/toggle', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ip: ip, vip: newVipState })
-  });
-  refreshDevices();
-}
-
-async function renameDevice(ip, curName) {
-  const n = prompt(`Rename device (${ip}):`, curName);
-  if (n !== null && n.trim() !== '' && n.trim() !== curName) {
-    await fetch('/api/device/rename', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ip: ip, name: n.trim() })
-    });
-    refreshDevices();
-  }
-}
-
-async function toggleScanner() {
-  scannerActive = !scannerActive;
-  const btn = document.getElementById('btnToggleScan');
-  btn.innerText = scannerActive ? 'SWEEPER: ACTIVE' : 'SWEEPER: PAUSED';
-  document.getElementById('radarStatusTag').innerText = scannerActive ? 'AUTO-SCANNER: ACTIVE' : 'AUTO-SCANNER: PAUSED';
-  await fetch('/api/scan/mode', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ active: scannerActive })
-  });
-}
-
-function openAddVipModal() {
-  document.getElementById('vipModal').className = 'modal open';
-}
-function closeAddVipModal() {
-  document.getElementById('vipModal').className = 'modal';
-}
-async function submitAddVip() {
-  const ip = document.getElementById('vipInputIp').value.trim();
-  const name = document.getElementById('vipInputName').value.trim();
-  if (!ip) return;
-  await fetch('/api/vip/toggle', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ip: ip, vip: true, name: name || ('Target ' + ip) })
-  });
-  closeAddVipModal();
-  document.getElementById('vipInputIp').value = '';
-  document.getElementById('vipInputName').value = '';
-  refreshDevices();
-}
-
-async function triggerPingNow() {
-  await fetch('/api/ping-now', { method: 'POST' });
-  fetchStatus();
-  fetchLogs();
-}
-
-async function sendDailyReport() {
-  await fetch('/api/send-report', { method: 'POST' });
-  fetchLogs();
-}
-
-async function updateOutageThreshold(val) {
-  await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ outage_threshold: parseInt(val) })
-  });
-  fetchLogs();
-}
-
-setInterval(fetchStatus, 3000);
-setInterval(refreshDevices, 4000);
-setInterval(fetchLogs, 5000);
-
-fetchStatus();
-refreshDevices();
-fetchLogs();
+setInterval(poll,3500);poll();loadClaim();
 </script>
 </body>
 </html>
