@@ -10,14 +10,14 @@
 #define HTTP_TRAP_PORT   8080
 #define HTTP_PORT        80
 
-#define MAX_LOG_ENTRIES  60
+#define MAX_LOG_ENTRIES  24
 #define PING_HISTORY_LEN 24
 #define MAX_LAN_DEVICES  32
 
 struct LogEntry {
   uint32_t timestamp; // Seconds since boot
-  char type[16];      // HONEYPOT, DEAUTH, OUTAGE, DNS, WOL, SYSTEM
-  char message[100];
+  char type[12];      // HONEYPOT, DEAUTH, OUTAGE, DNS, WOL, SYSTEM
+  char message[80];
   char severity[8];   // info, warn, danger, success
 };
 

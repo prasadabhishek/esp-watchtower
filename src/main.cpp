@@ -290,7 +290,7 @@ void handleTelnetHoneypot() {
       telnetState = T_SENT_BANNER;
       telnetUser = "";
       telnetInput = "";
-      activeTelnetClient.print("\r\nUbuntu 22.04.4 LTS (GNU/Linux 5.15.0-94-generic x86_64)\r\n\r\nlogin: ");
+      activeTelnetClient.print(F("\r\nUbuntu 22.04.4 LTS (GNU/Linux 5.15.0-94-generic x86_64)\r\n\r\nlogin: "));
       metrics.honeypot_telnet_hits++;
       String ip = activeTelnetClient.remoteIP().toString();
       strncpy(metrics.last_attacker_ip, ip.c_str(), sizeof(metrics.last_attacker_ip) - 1);
@@ -310,13 +310,13 @@ void handleTelnetHoneypot() {
           telnetUser = telnetInput;
           telnetInput = "";
           telnetState = T_WAIT_PASS;
-          activeTelnetClient.print("Password: ");
+          activeTelnetClient.print(F("Password: "));
         } else if (telnetState == T_WAIT_PASS) {
           String pass = telnetInput;
           String ip = activeTelnetClient.remoteIP().toString();
           addLog("HONEYPOT", "Burglar trap caught intruder " + ip + " trying User: '" + telnetUser + "', Pass: '" + pass + "'", "danger");
           triggerStrobe();
-          activeTelnetClient.println("\r\nLogin incorrect");
+          activeTelnetClient.println(F("\r\nLogin incorrect"));
           activeTelnetClient.stop();
           telnetState = T_DISCONNECTED;
           break;
@@ -360,7 +360,7 @@ void handleCameraHoneypot() {
     WiFiClient cli = rtspServer.accept();
     if (cli) {
       String ip = cli.remoteIP().toString();
-      cli.println("RTSP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"IPCamera\"\r\n\r\n");
+      cli.print(F("RTSP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"IPCamera\"\r\n\r\n"));
       cli.stop();
       metrics.honeypot_camera_hits++;
       addLog("HONEYPOT", "Fake Security Camera (Port 554) probed by " + ip, "danger");
@@ -370,6 +370,13 @@ void handleCameraHoneypot() {
 }
 
 // --- Primary Dashboard Web Server (Port 80) ---
+inline void sendJsonOk() {
+  server.send_P(200, PSTR("application/json"), PSTR("{\"status\":\"ok\"}"));
+}
+inline void sendJsonError(int code = 400) {
+  server.send_P(code, PSTR("application/json"), PSTR("{\"status\":\"error\"}"));
+}
+
 void setupDashboardServer() {
   server.on("/", HTTP_GET, []() {
     server.send_P(200, "text/html", INDEX_HTML);
@@ -465,11 +472,11 @@ void setupDashboardServer() {
         toggleVipStatus(lanDevices, lanDeviceCount, ip, isVip, nameStr);
         saveVipList();
         addLog("VIP", String("VIP tracking ") + (isVip ? "ENABLED" : "DISABLED") + " for " + ipStr, "warn");
-        server.send(200, "application/json", "{\"status\":\"ok\"}");
+        sendJsonOk();
         return;
       }
     }
-    server.send(400, "application/json", "{\"status\":\"error\"}");
+    sendJsonError();
   });
 
   server.on("/api/device/rename", HTTP_POST, []() {
@@ -486,12 +493,12 @@ void setupDashboardServer() {
           lanDevices[idx].name[sizeof(lanDevices[idx].name) - 1] = '\0';
           saveVipList();
           addLog("RADAR", String("Renamed device ") + ipStr + " -> " + nameStr, "info");
-          server.send(200, "application/json", "{\"status\":\"ok\"}");
+          sendJsonOk();
           return;
         }
       }
     }
-    server.send(400, "application/json", "{\"status\":\"error\"}");
+    sendJsonError();
   });
 
   server.on("/api/scan/mode", HTTP_POST, []() {
@@ -501,11 +508,11 @@ void setupDashboardServer() {
       if (doc["active"].is<bool>()) {
         radarSweeperActive = doc["active"].as<bool>();
         addLog("RADAR", String("Background LAN Radar: ") + (radarSweeperActive ? "ACTIVE" : "PAUSED"), "info");
-        server.send(200, "application/json", "{\"status\":\"ok\"}");
+        sendJsonOk();
         return;
       }
     }
-    server.send(400, "application/json", "{\"status\":\"error\"}");
+    sendJsonError();
   });
 
   server.on("/api/logs", HTTP_GET, []() {
@@ -555,7 +562,7 @@ void setupDashboardServer() {
   server.on("/api/test-alert", HTTP_POST, []() {
     triggerStrobe();
     addLog("TEST", "Simulated burglar alarm test triggered from dashboard", "danger");
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    sendJsonOk();
   });
 
   server.on("/api/ping-now", HTTP_POST, []() {
@@ -564,7 +571,7 @@ void setupDashboardServer() {
     bool wan = Ping.ping(IPAddress(1, 1, 1, 1), 1);
     metrics.internet_ping_ms = wan ? Ping.averageTime() : -1;
     addLog("WATCHDOG", "Internet check: Router=" + String(metrics.gateway_ping_ms) + "ms, Internet=" + String(metrics.internet_ping_ms) + "ms", "info");
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    sendJsonOk();
   });
 
   server.on("/api/wifi", HTTP_POST, []() {
@@ -583,7 +590,7 @@ void setupDashboardServer() {
         return;
       }
     }
-    server.send(400, "application/json", "{\"status\":\"error\"}");
+    sendJsonError();
   });
 
   server.on("/api/webhook", HTTP_POST, []() {
@@ -600,14 +607,14 @@ void setupDashboardServer() {
         return;
       }
     }
-    server.send(400, "application/json", "{\"status\":\"error\"}");
+    sendJsonError();
   });
 
   server.on("/api/clear-logs", HTTP_POST, []() {
     logCount = 0;
     if (LittleFS.exists("/audit.log")) LittleFS.remove("/audit.log");
     addLog("SYSTEM", "Activity records cleared by owner", "info");
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    sendJsonOk();
   });
 
   server.on("/api/config", HTTP_POST, []() {
@@ -619,11 +626,11 @@ void setupDashboardServer() {
         if (cfg_outage_threshold_sec < 10) cfg_outage_threshold_sec = 10;
         saveConfig();
         addLog("CONFIG", String("Outage threshold updated: Alert if down > ") + String(cfg_outage_threshold_sec / 60) + "m (" + String(cfg_outage_threshold_sec) + "s)", "info");
-        server.send(200, "application/json", "{\"status\":\"ok\"}");
+        sendJsonOk();
         return;
       }
     }
-    server.send(400, "application/json", "{\"status\":\"error\"}");
+    sendJsonError();
   });
 
   server.begin();
@@ -983,15 +990,15 @@ void handleSerialCLI() {
   if (line.length() == 0) return;
 
   if (line.equalsIgnoreCase("help")) {
-    Serial.println("\n=== Home Sentinel Commands ===");
-    Serial.println("status                 - Print device health and defense status");
-    Serial.println("report                 - Send Daily Morning Report to Discord right now");
-    Serial.println("alert                  - Simulate burglar alarm test");
-    Serial.println("reboot                 - Restart Sentinel");
-    Serial.println("printconfig            - Inspect active configuration");
-    Serial.println("wifi <ssid> <pass>     - Configure Wi-Fi credentials");
-    Serial.println("reconnect              - Trigger Wi-Fi reconnection");
-    Serial.println("==============================\n");
+    Serial.println(F("\n=== Home Sentinel Commands ==="));
+    Serial.println(F("status                 - Print device health and defense status"));
+    Serial.println(F("report                 - Send Daily Morning Report to Discord right now"));
+    Serial.println(F("alert                  - Simulate burglar alarm test"));
+    Serial.println(F("reboot                 - Restart Sentinel"));
+    Serial.println(F("printconfig            - Inspect active configuration"));
+    Serial.println(F("wifi <ssid> <pass>     - Configure Wi-Fi credentials"));
+    Serial.println(F("reconnect              - Trigger Wi-Fi reconnection"));
+    Serial.println(F("==============================\n"));
   } else if (line.equalsIgnoreCase("reconnect")) {
     Serial.println("Triggering Wi-Fi reconnection...");
     WiFi.disconnect();
