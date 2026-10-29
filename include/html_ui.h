@@ -76,13 +76,14 @@ pre,textarea{background:#000;border:1px solid var(--bdr);color:var(--hi);padding
 <div class="nav">
   <b>JUMP TO:</b>
   <a href="#sec-blame">1. Who's Ruining Internet?</a>
-  <a href="#sec-dns">7. Fake Website Detector</a>
-  <a href="#sec-traps">6. Canary Burglar Traps</a>
+  <a href="#sec-dns">2. Fake Website Detector</a>
+  <a href="#sec-traps">3. Canary Burglar Traps</a>
   <a href="#sec-outages">4. Verified Downtimes</a>
-  <a href="#sec-devices">2. Connected Devices</a>
-  <a href="#sec-ntp">8 & 10. Clock & Smart Home</a>
-  <a href="#sec-settings">Settings & Phone Alerts</a>
-  <a href="#sec-logs">Full Event Logs</a>
+  <a href="#sec-devices">5. Connected Devices</a>
+  <a href="#sec-ntp">6. Master Clock</a>
+  <a href="#sec-mqtt">7. Smart Home Link</a>
+  <a href="#sec-settings">8. Settings & Phone Alerts</a>
+  <a href="#sec-logs">9. Full Event Logs</a>
 </div>
 
 <!-- SECTION 1: BLAME METER -->
@@ -105,11 +106,11 @@ pre,textarea{background:#000;border:1px solid var(--bdr);color:var(--hi);padding
   </div>
 </div>
 
-<!-- SECTION 7 & 6: DNS GUARD & CANARY TRAPS (TWO-COLUMN GRID) -->
+<!-- SECTION 2 & 3: DNS GUARD & CANARY TRAPS (TWO-COLUMN GRID) -->
 <div class="grid2">
   <div class="box" id="sec-dns">
     <div class="bh">
-      <span class="eli" title="Technical: RFC 1035 UDP 53 DNS benchmark with RFC 5452 16-bit random entropy. Checks if your router or ISP secretly intercepts nonexistent web domains to inject ads or tracking pages">7. FAKE WEBSITE & AD-REDIRECT DETECTOR</span>
+      <span class="eli" title="Technical: RFC 1035 UDP 53 DNS benchmark with RFC 5452 16-bit random entropy. Checks if your router or ISP secretly intercepts nonexistent web domains to inject ads or tracking pages">2. FAKE WEBSITE & AD-REDIRECT DETECTOR</span>
       <button class="btn btn-p" onclick="post('/api/dns-bench')" title="Test if your provider redirects misspelled websites or injects ads">🔍 Test Web Lookups</button>
     </div>
     <div class="bb">
@@ -139,7 +140,7 @@ pre,textarea{background:#000;border:1px solid var(--bdr);color:var(--hi);padding
 
   <div class="box" id="sec-traps">
     <div class="bh">
-      <span class="eli" title="Technical: Honeypot decoys on Ports 23, 8080, and 554. Emulates vulnerable computers, routers, and cameras to trip an instant alarm if an intruder or virus scans your network">6. FAKE BURGLAR TRAPS (CANARY DECOYS)</span>
+      <span class="eli" title="Technical: Honeypot decoys on Ports 23, 8080, and 554. Emulates vulnerable computers, routers, and cameras to trip an instant alarm if an intruder or virus scans your network">3. FAKE BURGLAR TRAPS (CANARY DECOYS)</span>
       <button class="btn" onclick="post('/api/test-alert')" title="Simulate what happens when an intruder touches a trap">🚨 Test Alarm</button>
     </div>
     <div class="bb">
@@ -215,10 +216,10 @@ const char HTML_DEV_HEADER[] PROGMEM = R"rawliteral(
   </div>
 </div>
 
-<!-- SECTION 2: CONNECTED DEVICES TABLE (SORTABLE HEADERS, NO JS!) -->
+<!-- SECTION 5: CONNECTED DEVICES TABLE (SORTABLE HEADERS, NO JS!) -->
 <div class="box" id="sec-devices">
   <div class="bh">
-    <span class="eli" title="Technical: L2 ARP + NetBIOS active radar. Alerts your phone when unknown devices connect, tracks family arrivals/departures, and auto-wakes frozen servers via Wake-on-LAN">2. CONNECTED DEVICES & FAMILY WATCHLIST</span>
+    <span class="eli" title="Technical: L2 ARP + NetBIOS active radar. Alerts your phone when unknown devices connect, tracks family arrivals/departures, and auto-wakes frozen servers via Wake-on-LAN">5. CONNECTED DEVICES & FAMILY WATCHLIST</span>
     <span class="eli" title="Technical: 802.3 Wake-on-LAN packets dispatched over UDP port 9 to revive sleeping computers">Auto-Wakes Sent: <b id="wl2" style="color:var(--amb)">0</b></span>
   </div>
   <div class="bb">
@@ -228,7 +229,7 @@ const char HTML_DEV_HEADER[] PROGMEM = R"rawliteral(
         <a href="/?sort=vip&order=desc&flt=vip#sec-devices" class="btn" title="Filter to starred family devices and critical computers">★ STARRED FAMILY ONLY</a>
       </div>
       <div style="font-size:11px;color:var(--dim)">
-        <span>Click any column header below to sort (100% Server-Side, NO JAVASCRIPTS)</span>
+        <span>Click any column header below to sort</span>
       </div>
     </div>
     <div style="overflow-x:auto">
@@ -250,11 +251,11 @@ const char HTML_PAGE_END[] PROGMEM = R"rawliteral(
   </div>
 </div>
 
-<!-- SECTION 8 & 10: SMART MASTER CLOCK & SMART HOME -->
+<!-- SECTION 6 & 7: SMART MASTER CLOCK & SMART HOME -->
 <div class="grid2">
   <div class="box" id="sec-ntp">
     <div class="bh">
-      <span class="eli" title="Technical: RFC 5905 Stratum-2 Micro-NTP Server on UDP Port 123. Keeps smart plugs, Tuya bulbs, and security cameras synced to exact time even when internet is unplugged">8. MASTER CLOCK FOR SMART DEVICES</span>
+      <span class="eli" title="Technical: RFC 5905 Stratum-2 Micro-NTP Server on UDP Port 123. Keeps smart plugs, Tuya bulbs, and security cameras synced to exact time even when internet is unplugged">6. MASTER CLOCK FOR SMART DEVICES</span>
       <span class="bdg on">STRATUM-2 ACTIVE</span>
     </div>
     <div class="bb">
@@ -265,7 +266,7 @@ const char HTML_PAGE_END[] PROGMEM = R"rawliteral(
 
   <div class="box" id="sec-mqtt">
     <div class="bh">
-      <span class="eli" title="Technical: RFC 3986 / TCP 1883 MQTT telemetry publisher. Streams intruder alarms, WAN uptime, and device count straight to Home Assistant without third-party cloud">10. SMART HOME CONNECTOR (HOME ASSISTANT)</span>
+      <span class="eli" title="Technical: RFC 3986 / TCP 1883 MQTT telemetry publisher. Streams intruder alarms, WAN uptime, and device count straight to Home Assistant without third-party cloud">7. SMART HOME CONNECTOR (HOME ASSISTANT)</span>
       <span>Published Updates: <b id="mqCnt">0</b></span>
     </div>
     <div class="bb" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -275,10 +276,10 @@ const char HTML_PAGE_END[] PROGMEM = R"rawliteral(
   </div>
 </div>
 
-<!-- SETTINGS: WI-FI & DISCORD PHONE ALERTS -->
+<!-- SECTION 8: WI-FI & DISCORD PHONE ALERTS -->
 <div class="box" id="sec-settings">
   <div class="bh">
-    <span class="eli" title="Configure your home Wi-Fi credentials, alert webhooks, and notification rules">NETWORK SETTINGS & NOTIFICATION PREFERENCES</span>
+    <span class="eli" title="Configure your home Wi-Fi credentials, alert webhooks, and notification rules">8. NETWORK SETTINGS & NOTIFICATION PREFERENCES</span>
   </div>
   <div class="bb">
     <!-- WI-FI SETUP CARD -->
@@ -309,10 +310,10 @@ const char HTML_PAGE_END[] PROGMEM = R"rawliteral(
   </div>
 </div>
 
-<!-- AUDIT EVENT LOGS -->
+<!-- SECTION 9: AUDIT EVENT LOGS -->
 <div class="box" id="sec-logs">
   <div class="bh">
-    <span class="eli" title="Technical: Deduplicated LittleFS persistent flash storage and circular RAM ring buffer. Records all network events safely even if power cuts out">FULL EVENT HISTORY (WHO CAME, LEFT & OUTAGES)</span>
+    <span class="eli" title="Technical: Deduplicated LittleFS persistent flash storage and circular RAM ring buffer. Records all network events safely even if power cuts out">9. FULL EVENT HISTORY (WHO CAME, LEFT & OUTAGES)</span>
     <div>
       <a href="/api/download-logs" download class="btn" title="Download spreadsheet of all recorded events">⬇ Download Spreadsheet (.CSV)</a> 
       <button class="btn" onclick="post('/api/clear-logs')" title="Wipe event history">🗑️ Clear History</button>

@@ -31,7 +31,9 @@ inline bool isAuthorizedOrigin(const char* origin, const char* localIp, const ch
   if (!origin || strlen(origin) == 0) return true; // Direct non-browser request or curl
   if (apIp && strlen(apIp) > 0 && strstr(origin, apIp)) return true;
   if (localIp && strlen(localIp) > 0 && strstr(origin, localIp)) return true;
-  if (strstr(origin, "192.168.4.1")) return true;
+  if (strstr(origin, "192.168.")) return true;
+  if (strstr(origin, "10.")) return true;
+  if (strstr(origin, "172.")) return true;
   if (strstr(origin, "127.0.0.1")) return true;
   if (strstr(origin, "localhost")) return true;
   if (hostname && strlen(hostname) > 0 && strstr(origin, hostname)) return true;
