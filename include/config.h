@@ -12,6 +12,7 @@
 
 #define MAX_LOG_ENTRIES  60
 #define PING_HISTORY_LEN 24
+#define MAX_LAN_DEVICES  32
 
 struct LogEntry {
   uint32_t timestamp; // Seconds since boot

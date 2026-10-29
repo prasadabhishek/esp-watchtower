@@ -92,6 +92,122 @@ void test_json_escaping(void) {
   TEST_ASSERT_EQUAL_STRING(expected.c_str(), escapeJsonString(input).c_str());
 }
 
+void test_ip_helpers(void) {
+  uint8_t ip[4];
+  bool ok = parseIpAddress("192.168.50.119", ip);
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_EQUAL_UINT8(192, ip[0]);
+  TEST_ASSERT_EQUAL_UINT8(168, ip[1]);
+  TEST_ASSERT_EQUAL_UINT8(50, ip[2]);
+  TEST_ASSERT_EQUAL_UINT8(119, ip[3]);
+
+  char buf[16];
+  ipToString(ip, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("192.168.50.119", buf);
+
+  TEST_ASSERT_FALSE(parseIpAddress("999.1.1.1", ip));
+  TEST_ASSERT_FALSE(parseIpAddress("invalid", ip));
+}
+
+void test_lan_device_upsert_and_state(void) {
+  LanDevice list[10];
+  uint8_t count = 0;
+  uint8_t ip1[4] = {192, 168, 50, 119};
+  uint8_t mac1[6] = {0xb0, 0xde, 0x28, 0x30, 0xc1, 0x6a};
+  bool cameOnline = false, isNew = false;
+
+  // Insert device 1
+  bool ok = upsertDeviceRecord(list, count, 10, ip1, mac1, 5, 100, cameOnline, isNew);
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_EQUAL_UINT8(1, count);
+  TEST_ASSERT_TRUE(isNew);
+  TEST_ASSERT_TRUE(cameOnline);
+  TEST_ASSERT_TRUE(list[0].is_online);
+  TEST_ASSERT_EQUAL_STRING("Apple Inc.", list[0].vendor);
+
+  // Mark missed sweeps until offline (threshold = 3)
+  bool wentOffline = false;
+  markDeviceSweepResult(list, count, ip1, false, -1, 150, 3, wentOffline, cameOnline);
+  TEST_ASSERT_FALSE(wentOffline);
+  TEST_ASSERT_TRUE(list[0].is_online);
+
+  markDeviceSweepResult(list, count, ip1, false, -1, 200, 3, wentOffline, cameOnline);
+  TEST_ASSERT_FALSE(wentOffline);
+
+  markDeviceSweepResult(list, count, ip1, false, -1, 250, 3, wentOffline, cameOnline);
+  TEST_ASSERT_TRUE(wentOffline);
+  TEST_ASSERT_FALSE(list[0].is_online);
+
+  // Comes back online
+  markDeviceSweepResult(list, count, ip1, true, 4, 300, 3, wentOffline, cameOnline);
+  TEST_ASSERT_TRUE(cameOnline);
+  TEST_ASSERT_TRUE(list[0].is_online);
+  TEST_ASSERT_EQUAL_INT(4, list[0].latency_ms);
+}
+
+void test_vip_tagging(void) {
+  LanDevice list[5];
+  uint8_t count = 0;
+  uint8_t ip[4] = {192, 168, 50, 85};
+  uint8_t mac[6] = {0x00, 0x24, 0xe4, 0x8a, 0x86, 0x2a};
+  bool cameOnline = false, isNew = false;
+
+  upsertDeviceRecord(list, count, 5, ip, mac, 2, 50, cameOnline, isNew);
+  TEST_ASSERT_EQUAL_STRING("Synology NAS", list[0].vendor);
+  TEST_ASSERT_FALSE(list[0].is_vip);
+
+  // Toggle VIP with custom name
+  bool ok = toggleVipStatus(list, count, ip, true, "Home Storage NAS");
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_TRUE(list[0].is_vip);
+  TEST_ASSERT_EQUAL_STRING("Home Storage NAS", list[0].name);
+}
+
+void test_outage_configurable_threshold(void) {
+  unsigned long outageStartMs = 0;
+  uint32_t thresholdSec = 300; // 5 minutes = 300,000 ms
+  bool isCurrentlyDown = false;
+  bool shouldAlertDown = false;
+  bool shouldAlertRestored = false;
+  uint32_t totalDurationSec = 0;
+
+  // Intermittent failure at t=10s: should NOT alert
+  evaluateOutageCondition(false, 10000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  TEST_ASSERT_FALSE(shouldAlertDown);
+  TEST_ASSERT_FALSE(isCurrentlyDown);
+
+  // Recovery at t=20s: resets intermittent start
+  evaluateOutageCondition(true, 20000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  TEST_ASSERT_EQUAL_UINT32(0, outageStartMs);
+  TEST_ASSERT_FALSE(isCurrentlyDown);
+
+  // Real outage begins at t=30s
+  evaluateOutageCondition(false, 30000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  TEST_ASSERT_EQUAL_UINT32(30000, outageStartMs);
+  TEST_ASSERT_FALSE(shouldAlertDown);
+
+  // t=200s (under 300s): still no alert
+  evaluateOutageCondition(false, 200000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  TEST_ASSERT_FALSE(shouldAlertDown);
+  TEST_ASSERT_FALSE(isCurrentlyDown);
+
+  // t=330s (threshold reached 300s since t=30s): ALERTS DOWN
+  evaluateOutageCondition(false, 330000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  TEST_ASSERT_TRUE(shouldAlertDown);
+  TEST_ASSERT_TRUE(isCurrentlyDown);
+
+  // t=400s (still down): does not re-alert down
+  evaluateOutageCondition(false, 400000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  TEST_ASSERT_FALSE(shouldAlertDown);
+  TEST_ASSERT_TRUE(isCurrentlyDown);
+
+  // t=630s: Internet RESTORED (total downtime 600 seconds = 10 minutes)
+  evaluateOutageCondition(true, 630000, outageStartMs, thresholdSec, isCurrentlyDown, shouldAlertDown, shouldAlertRestored, totalDurationSec);
+  TEST_ASSERT_TRUE(shouldAlertRestored);
+  TEST_ASSERT_FALSE(isCurrentlyDown);
+  TEST_ASSERT_EQUAL_UINT32(600, totalDurationSec);
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_mac_parser_colon);
@@ -102,5 +218,9 @@ int main(int argc, char **argv) {
   RUN_TEST(test_packet_loss_calculation);
   RUN_TEST(test_uptime_formatting);
   RUN_TEST(test_json_escaping);
+  RUN_TEST(test_ip_helpers);
+  RUN_TEST(test_lan_device_upsert_and_state);
+  RUN_TEST(test_vip_tagging);
+  RUN_TEST(test_outage_configurable_threshold);
   return UNITY_END();
 }

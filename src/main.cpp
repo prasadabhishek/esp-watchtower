@@ -9,6 +9,11 @@
 #include <WiFiClientSecure.h>
 #include <ESP8266HTTPClient.h>
 
+extern "C" {
+#include "lwip/etharp.h"
+#include "lwip/netif.h"
+}
+
 #include "config.h"
 #include "html_ui.h"
 #include "trap_ui.h"
@@ -45,6 +50,7 @@ char cfg_ssid[33] = "";
 char cfg_pass[64] = "";
 char cfg_webhook[160] = "";
 char cfg_last_wol[18] = "";
+uint32_t cfg_outage_threshold_sec = 300; // Default 5 minutes (300 seconds)
 
 // Telnet Burglar Trap State
 enum TelnetState { T_DISCONNECTED, T_SENT_BANNER, T_WAIT_USER, T_WAIT_PASS };
@@ -52,12 +58,23 @@ TelnetState telnetState = T_DISCONNECTED;
 String telnetUser = "";
 String telnetInput = "";
 
+// LAN Radar & VIP State
+LanDevice lanDevices[MAX_LAN_DEVICES];
+uint8_t lanDeviceCount = 0;
+bool radarSweeperActive = true;
+uint8_t radarScanHost = 1;
+unsigned long lastRadarTickMs = 0;
+unsigned long lastVipTickMs = 0;
+
 // Forward declarations
 void addLog(const char* type, const String& msg, const char* severity);
 void triggerStrobe();
 void sendWakeOnLan(const char* macStr);
 void handleSerialCLI();
 void saveConfig();
+void saveVipList();
+void loadVipList();
+void handleLanRadar();
 void loadConfig();
 void dispatchWebhook(const char* type, const String& msg, const char* severity);
 void dispatchRawDiscord(const String& rawContent);
@@ -192,6 +209,7 @@ void loadConfig() {
   if (doc["pass"].is<const char*>() && strlen(doc["pass"]) > 0) strncpy(cfg_pass, doc["pass"], sizeof(cfg_pass) - 1);
   if (doc["webhook"].is<const char*>() && strlen(doc["webhook"]) > 0) strncpy(cfg_webhook, doc["webhook"], sizeof(cfg_webhook) - 1);
   if (doc["wol"].is<const char*>()) strncpy(cfg_last_wol, doc["wol"], sizeof(cfg_last_wol) - 1);
+  if (doc["outage_threshold"].is<uint32_t>()) cfg_outage_threshold_sec = doc["outage_threshold"].as<uint32_t>();
 }
 
 void saveConfig() {
@@ -202,8 +220,48 @@ void saveConfig() {
   doc["pass"] = cfg_pass;
   doc["webhook"] = cfg_webhook;
   doc["wol"] = cfg_last_wol;
+  doc["outage_threshold"] = cfg_outage_threshold_sec;
   serializeJson(doc, f);
   f.close();
+}
+
+void saveVipList() {
+  File f = LittleFS.open("/vips.json", "w");
+  if (!f) return;
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (uint8_t i = 0; i < lanDeviceCount; i++) {
+    if (lanDevices[i].is_vip) {
+      JsonObject obj = arr.add<JsonObject>();
+      char ipStr[16];
+      ipToString(lanDevices[i].ip, ipStr, sizeof(ipStr));
+      obj["ip"] = ipStr;
+      obj["name"] = lanDevices[i].name;
+    }
+  }
+  serializeJson(doc, f);
+  f.close();
+}
+
+void loadVipList() {
+  if (!LittleFS.exists("/vips.json")) return;
+  File f = LittleFS.open("/vips.json", "r");
+  if (!f) return;
+  JsonDocument doc;
+  deserializeJson(doc, f);
+  f.close();
+  JsonArray arr = doc.as<JsonArray>();
+  uint32_t nowSec = millis() / 1000;
+  for (JsonObject obj : arr) {
+    const char* ipStr = obj["ip"];
+    const char* nameStr = obj["name"];
+    uint8_t ip[4];
+    if (ipStr && parseIpAddress(ipStr, ip)) {
+      bool cameOnline = false, isNew = false;
+      upsertDeviceRecord(lanDevices, lanDeviceCount, MAX_LAN_DEVICES, ip, NULL, -1, nowSec, cameOnline, isNew);
+      toggleVipStatus(lanDevices, lanDeviceCount, ip, true, nameStr ? nameStr : "");
+    }
+  }
 }
 
 // --- Remote Wake-Up Switch ---
@@ -345,6 +403,22 @@ void setupDashboardServer() {
     doc["attack_alert"] = alertActive;
     doc["wan_down"] = metrics.is_internet_down;
 
+    // LAN Radar metrics
+    doc["lan_total"] = lanDeviceCount;
+    uint8_t onlineCount = 0, vipCount = 0, vipOnline = 0;
+    for (uint8_t i = 0; i < lanDeviceCount; i++) {
+      if (lanDevices[i].is_online) onlineCount++;
+      if (lanDevices[i].is_vip) {
+        vipCount++;
+        if (lanDevices[i].is_online) vipOnline++;
+      }
+    }
+    doc["lan_online"] = onlineCount;
+    doc["vip_count"] = vipCount;
+    doc["vip_online"] = vipOnline;
+    doc["radar_active"] = radarSweeperActive;
+    doc["outage_threshold"] = cfg_outage_threshold_sec;
+
     JsonArray hist = doc["ping_history"].to<JsonArray>();
     for (int i = 0; i < PING_HISTORY_LEN; i++) {
       int idx = (pingHistoryIdx + i) % PING_HISTORY_LEN;
@@ -354,6 +428,82 @@ void setupDashboardServer() {
     String out;
     serializeJson(doc, out);
     server.send(200, "application/json", out);
+  });
+
+  server.on("/api/devices", HTTP_GET, []() {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    uint32_t nowSec = millis() / 1000;
+    for (uint8_t i = 0; i < lanDeviceCount; i++) {
+      JsonObject d = arr.add<JsonObject>();
+      char ipStr[16];
+      ipToString(lanDevices[i].ip, ipStr, sizeof(ipStr));
+      d["ip"] = ipStr;
+      char macStr[18];
+      macToString(lanDevices[i].mac, macStr, sizeof(macStr));
+      d["mac"] = macStr;
+      d["name"] = lanDevices[i].name;
+      d["vendor"] = lanDevices[i].vendor;
+      d["vip"] = lanDevices[i].is_vip;
+      d["online"] = lanDevices[i].is_online;
+      d["latency"] = lanDevices[i].latency_ms;
+      d["last_seen_sec"] = (nowSec >= lanDevices[i].last_seen_sec) ? (nowSec - lanDevices[i].last_seen_sec) : 0;
+    }
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+  });
+
+  server.on("/api/vip/toggle", HTTP_POST, []() {
+    if (server.hasArg("plain")) {
+      JsonDocument doc;
+      deserializeJson(doc, server.arg("plain"));
+      const char* ipStr = doc["ip"];
+      bool isVip = doc["vip"] | false;
+      uint8_t ip[4];
+      if (ipStr && parseIpAddress(ipStr, ip)) {
+        toggleVipStatus(lanDevices, lanDeviceCount, ip, isVip, doc["name"] | "");
+        saveVipList();
+        addLog("VIP", String("VIP tracking ") + (isVip ? "ENABLED" : "DISABLED") + " for " + ipStr, "warn");
+        server.send(200, "application/json", "{\"status\":\"ok\"}");
+        return;
+      }
+    }
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+  });
+
+  server.on("/api/vip/add", HTTP_POST, []() {
+    if (server.hasArg("plain")) {
+      JsonDocument doc;
+      deserializeJson(doc, server.arg("plain"));
+      const char* ipStr = doc["ip"];
+      const char* nameStr = doc["name"] | "VIP Target";
+      uint8_t ip[4];
+      if (ipStr && parseIpAddress(ipStr, ip)) {
+        bool cameOnline = false, isNew = false;
+        upsertDeviceRecord(lanDevices, lanDeviceCount, MAX_LAN_DEVICES, ip, NULL, -1, millis()/1000, cameOnline, isNew);
+        toggleVipStatus(lanDevices, lanDeviceCount, ip, true, nameStr);
+        saveVipList();
+        addLog("VIP", String("Added VIP target: ") + nameStr + " (" + ipStr + ")", "info");
+        server.send(200, "application/json", "{\"status\":\"ok\"}");
+        return;
+      }
+    }
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+  });
+
+  server.on("/api/scan/mode", HTTP_POST, []() {
+    if (server.hasArg("plain")) {
+      JsonDocument doc;
+      deserializeJson(doc, server.arg("plain"));
+      if (doc["active"].is<bool>()) {
+        radarSweeperActive = doc["active"].as<bool>();
+        addLog("RADAR", String("Background LAN Radar: ") + (radarSweeperActive ? "ACTIVE" : "PAUSED"), "info");
+        server.send(200, "application/json", "{\"status\":\"ok\"}");
+        return;
+      }
+    }
+    server.send(400, "application/json", "{\"status\":\"error\"}");
   });
 
   server.on("/api/logs", HTTP_GET, []() {
@@ -458,6 +608,22 @@ void setupDashboardServer() {
     server.send(200, "application/json", "{\"status\":\"ok\"}");
   });
 
+  server.on("/api/config", HTTP_POST, []() {
+    if (server.hasArg("plain")) {
+      JsonDocument doc;
+      deserializeJson(doc, server.arg("plain"));
+      if (doc["outage_threshold"].is<uint32_t>()) {
+        cfg_outage_threshold_sec = doc["outage_threshold"].as<uint32_t>();
+        if (cfg_outage_threshold_sec < 10) cfg_outage_threshold_sec = 10;
+        saveConfig();
+        addLog("CONFIG", String("Outage threshold updated: Alert if down > ") + String(cfg_outage_threshold_sec / 60) + "m (" + String(cfg_outage_threshold_sec) + "s)", "info");
+        server.send(200, "application/json", "{\"status\":\"ok\"}");
+        return;
+      }
+    }
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+  });
+
   server.begin();
 }
 
@@ -489,14 +655,93 @@ void runNetworkWatchdog() {
   }
   pingHistoryIdx = (pingHistoryIdx + 1) % PING_HISTORY_LEN;
 
-  if (!wan_ok && !metrics.is_internet_down) {
-    metrics.is_internet_down = true;
-    metrics.total_outages++;
-    addLog("OUTAGE", "Internet connection was dropped (unreachable)", "danger");
-    triggerStrobe();
-  } else if (wan_ok && metrics.is_internet_down) {
-    metrics.is_internet_down = false;
-    addLog("OUTAGE", "Internet connection has been restored", "success");
+  static unsigned long outageStartMs = 0;
+  bool shouldAlertDown = false;
+  bool shouldAlertRestored = false;
+  uint32_t totalDurationSec = 0;
+
+  if (evaluateOutageCondition(wan_ok, millis(), outageStartMs, cfg_outage_threshold_sec,
+                              metrics.is_internet_down, shouldAlertDown, shouldAlertRestored, totalDurationSec)) {
+    if (shouldAlertDown) {
+      metrics.total_outages++;
+      addLog("OUTAGE", "Internet down for " + String(cfg_outage_threshold_sec / 60) + "+ mins (confirmed outage)", "danger");
+      triggerStrobe();
+    } else if (shouldAlertRestored) {
+      metrics.last_outage_duration = totalDurationSec;
+      addLog("OUTAGE", "Internet restored after " + String(totalDurationSec / 60) + "m " + String(totalDurationSec % 60) + "s", "success");
+    }
+  }
+}
+
+// --- LAN Radar & VIP Sentinel Engine ---
+void handleLanRadar() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  unsigned long now = millis();
+
+  // 1. Priority VIP Watchlist Check (every 15 seconds)
+  if (now - lastVipTickMs >= 15000UL) {
+    lastVipTickMs = now;
+    uint32_t nowSec = now / 1000;
+    for (uint8_t i = 0; i < lanDeviceCount; i++) {
+      if (lanDevices[i].is_vip) {
+        IPAddress vipIp(lanDevices[i].ip[0], lanDevices[i].ip[1], lanDevices[i].ip[2], lanDevices[i].ip[3]);
+        bool ok = Ping.ping(vipIp, 1);
+        int lat = ok ? Ping.averageTime() : -1;
+        bool wentOffline = false, cameOnline = false;
+        markDeviceSweepResult(lanDevices, lanDeviceCount, lanDevices[i].ip, ok, lat, nowSec, 2, wentOffline, cameOnline);
+
+        char ipStr[16];
+        ipToString(lanDevices[i].ip, ipStr, sizeof(ipStr));
+        if (cameOnline) {
+          addLog("VIP", String("VIP Target ONLINE: ") + lanDevices[i].name + " (" + ipStr + ")", "success");
+        } else if (wentOffline) {
+          addLog("VIP", String("🚨 VIP Target OFFLINE: ") + lanDevices[i].name + " (" + ipStr + ")", "danger");
+        }
+      }
+    }
+  }
+
+  // 2. Non-blocking ARP Subnet Sweeper (every 80ms, sends 1 instant ARP request)
+  if (radarSweeperActive && (now - lastRadarTickMs >= 80UL)) {
+    lastRadarTickMs = now;
+    IPAddress localIp = WiFi.localIP();
+    IPAddress targetIp(localIp[0], localIp[1], localIp[2], radarScanHost);
+
+    // Skip self and broadcast
+    if (radarScanHost != localIp[3] && radarScanHost != 255) {
+      ip4_addr_t target_ip4;
+      target_ip4.addr = (uint32_t)targetIp;
+
+      // Check if host answered in LwIP ARP cache
+      struct eth_addr *eth_ret = NULL;
+      const ip4_addr_t *ip_ret = NULL;
+      uint32_t nowSec = now / 1000;
+      uint8_t targetBytes[4] = {localIp[0], localIp[1], localIp[2], radarScanHost};
+
+      if (etharp_find_addr(netif_default, &target_ip4, &eth_ret, &ip_ret) >= 0 && eth_ret) {
+        uint8_t mac[6];
+        memcpy(mac, eth_ret->addr, 6);
+        bool cameOnline = false, isNew = false;
+        upsertDeviceRecord(lanDevices, lanDeviceCount, MAX_LAN_DEVICES, targetBytes,
+                           mac, 1, nowSec, cameOnline, isNew);
+        char ipStr[16];
+        ipToString(targetBytes, ipStr, sizeof(ipStr));
+        int idx = findDevice(lanDevices, lanDeviceCount, targetBytes);
+        if (isNew) {
+          addLog("LAN_RADAR", String("Active LAN client found: ") + ipStr + " [" + (idx >= 0 ? lanDevices[idx].vendor : "Client") + "]", "info");
+        } else if (cameOnline) {
+          addLog("LAN_RADAR", String("Client reconnected: ") + ipStr + " (" + (idx >= 0 ? lanDevices[idx].name : "") + ")", "success");
+        }
+      }
+
+      // Fire non-blocking ARP request frame (returns immediately in <0.1ms)
+      etharp_request(netif_default, &target_ip4);
+    }
+
+    radarScanHost++;
+    if (radarScanHost > 254) {
+      radarScanHost = 1;
+    }
   }
 }
 
@@ -509,18 +754,25 @@ void setup() {
   delay(500);
 
   loadConfig();
+  loadVipList();
 
   for (int i = 0; i < PING_HISTORY_LEN; i++) pingHistory[i] = 15;
 
   if (strlen(cfg_ssid) > 0) {
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
     Serial.printf("[WIFI] Connecting to %s in Station Mode...\n", cfg_ssid);
     WiFi.begin(cfg_ssid, cfg_pass);
-    int8_t res = WiFi.waitForConnectResult(15000);
-    if (res == WL_CONNECTED) {
+    unsigned long startConn = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - startConn < 25000)) {
+      delay(500);
+      Serial.print(".");
+    }
+    Serial.println();
+    if (WiFi.status() == WL_CONNECTED) {
       Serial.printf("[WIFI] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
     } else {
-      Serial.printf("[WIFI] Connection result: %d. Activating fallback AP...\n", res);
+      Serial.println("[WIFI] Fallback: Activating SoftAP...");
       WiFi.mode(WIFI_AP_STA);
       WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS);
     }
@@ -555,6 +807,7 @@ void loop() {
   trapServer.handleClient();
   handleTelnetHoneypot();
   handleCameraHoneypot();
+  handleLanRadar();
   MDNS.update();
   handleSerialCLI();
 
