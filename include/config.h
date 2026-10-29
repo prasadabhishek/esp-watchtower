@@ -43,22 +43,16 @@ struct SystemMetrics {
   
   // Radio Sniffer
   uint32_t total_deauth_packets;
-  uint32_t total_disassoc_packets;
   uint32_t deauth_attacks_detected;
-  uint32_t total_smartphone_probes;
-  uint32_t broadcast_packets_per_sec;
-  uint32_t spam_warnings_count;
   
   // Internal Devices & Watchdog
   uint8_t active_devices_count;
   bool watched_device_online;
   char watched_device_ip[16];
-  bool dns_tampered;
   
   // Honeypot
   uint32_t honeypot_telnet_hits;
   uint32_t honeypot_web_hits;
   uint32_t honeypot_camera_hits;
   char last_attacker_ip[16];
-  char last_attacker_time[16];
 };

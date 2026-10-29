@@ -103,40 +103,27 @@ void dispatchRawDiscord(const String& rawContent) {
 void dispatchWebhook(const char* type, const String& msg, const char* severity) {
   if (strlen(cfg_webhook) == 0 || WiFi.status() != WL_CONNECTED) return;
   
-  std::unique_ptr<WiFiClientSecure> client(new WiFiClientSecure);
-  client->setInsecure();
-  client->setBufferSizes(1024, 512);
-  client->setTimeout(3000);
-
-  HTTPClient http;
-  if (http.begin(*client, cfg_webhook)) {
-    http.addHeader("Content-Type", "application/json");
-    
-    String label = "SECURITY ALERT";
-    String emoji = "🚨";
-    if (strcmp(type, "HONEYPOT") == 0) {
-      label = "BURGLAR TRAP TRIPPED";
-      emoji = "🚨";
-    } else if (strcmp(type, "OUTAGE") == 0) {
-      if (strcmp(severity, "danger") == 0) {
-        label = "INTERNET WENT DOWN";
-        emoji = "⚠️";
-      } else {
-        label = "INTERNET BACK ONLINE";
-        emoji = "✅";
-      }
-    } else if (strcmp(type, "TEST") == 0) {
-      label = "TEST ALARM";
-      emoji = "🔔";
+  String label = "SECURITY ALERT";
+  String emoji = "🚨";
+  if (strcmp(type, "HONEYPOT") == 0) {
+    label = "BURGLAR TRAP TRIPPED";
+    emoji = "🚨";
+  } else if (strcmp(type, "OUTAGE") == 0) {
+    if (strcmp(severity, "danger") == 0) {
+      label = "INTERNET WENT DOWN";
+      emoji = "⚠️";
+    } else {
+      label = "INTERNET BACK ONLINE";
+      emoji = "✅";
     }
-
-    String cleanMsg = msg;
-    cleanMsg.replace("\"", "'");
-    String payload = "{\"content\":\"" + emoji + " **[" + label + "]**\\n> " + cleanMsg + "\"}";
-
-    http.POST(payload);
-    http.end();
+  } else if (strcmp(type, "TEST") == 0) {
+    label = "TEST ALARM";
+    emoji = "🔔";
   }
+
+  String cleanMsg = msg;
+  cleanMsg.replace("\"", "'");
+  dispatchRawDiscord(emoji + " **[" + label + "]**\\n> " + cleanMsg);
 }
 
 // --- Daily Morning Report ---
@@ -470,31 +457,14 @@ void setupDashboardServer() {
       deserializeJson(doc, server.arg("plain"));
       const char* ipStr = doc["ip"];
       bool isVip = doc["vip"] | false;
-      uint8_t ip[4];
-      if (ipStr && parseIpAddress(ipStr, ip)) {
-        toggleVipStatus(lanDevices, lanDeviceCount, ip, isVip, doc["name"] | "");
-        saveVipList();
-        addLog("VIP", String("VIP tracking ") + (isVip ? "ENABLED" : "DISABLED") + " for " + ipStr, "warn");
-        server.send(200, "application/json", "{\"status\":\"ok\"}");
-        return;
-      }
-    }
-    server.send(400, "application/json", "{\"status\":\"error\"}");
-  });
-
-  server.on("/api/vip/add", HTTP_POST, []() {
-    if (server.hasArg("plain")) {
-      JsonDocument doc;
-      deserializeJson(doc, server.arg("plain"));
-      const char* ipStr = doc["ip"];
-      const char* nameStr = doc["name"] | "VIP Target";
+      const char* nameStr = doc["name"] | "";
       uint8_t ip[4];
       if (ipStr && parseIpAddress(ipStr, ip)) {
         bool cameOnline = false, isNew = false;
         upsertDeviceRecord(lanDevices, lanDeviceCount, MAX_LAN_DEVICES, ip, NULL, -1, millis()/1000, cameOnline, isNew);
-        toggleVipStatus(lanDevices, lanDeviceCount, ip, true, nameStr);
+        toggleVipStatus(lanDevices, lanDeviceCount, ip, isVip, nameStr);
         saveVipList();
-        addLog("VIP", String("Added VIP target: ") + nameStr + " (" + ipStr + ")", "info");
+        addLog("VIP", String("VIP tracking ") + (isVip ? "ENABLED" : "DISABLED") + " for " + ipStr, "warn");
         server.send(200, "application/json", "{\"status\":\"ok\"}");
         return;
       }

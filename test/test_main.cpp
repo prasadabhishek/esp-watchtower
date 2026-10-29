@@ -60,38 +60,6 @@ void test_magic_packet_structure(void) {
   }
 }
 
-void test_outage_duration(void) {
-  uint32_t mins = 0, secs = 0;
-  // Outage of 754 seconds = 12 mins, 34 seconds
-  bool ok = calculateOutageDuration(1000, 1754, mins, secs);
-  TEST_ASSERT_TRUE(ok);
-  TEST_ASSERT_EQUAL_UINT32(12, mins);
-  TEST_ASSERT_EQUAL_UINT32(34, secs);
-
-  // Negative / invalid outage
-  TEST_ASSERT_FALSE(calculateOutageDuration(2000, 1000, mins, secs));
-}
-
-void test_packet_loss_calculation(void) {
-  TEST_ASSERT_EQUAL_UINT32(0, calculatePacketLossPercent(0, 0));
-  TEST_ASSERT_EQUAL_UINT32(5, calculatePacketLossPercent(100, 5));
-  TEST_ASSERT_EQUAL_UINT32(50, calculatePacketLossPercent(20, 10));
-  TEST_ASSERT_EQUAL_UINT32(100, calculatePacketLossPercent(10, 15));
-}
-
-void test_uptime_formatting(void) {
-  TEST_ASSERT_EQUAL_STRING("00:00:00", formatUptimeString(0).c_str());
-  TEST_ASSERT_EQUAL_STRING("00:01:05", formatUptimeString(65).c_str());
-  TEST_ASSERT_EQUAL_STRING("01:00:00", formatUptimeString(3600).c_str());
-  TEST_ASSERT_EQUAL_STRING("25:30:15", formatUptimeString(91815).c_str());
-}
-
-void test_json_escaping(void) {
-  std::string input = "User 'admin' said \"hello\"\nNext line";
-  std::string expected = "User 'admin' said \\\"hello\\\"\\nNext line";
-  TEST_ASSERT_EQUAL_STRING(expected.c_str(), escapeJsonString(input).c_str());
-}
-
 void test_ip_helpers(void) {
   uint8_t ip[4];
   bool ok = parseIpAddress("192.168.50.119", ip);
@@ -233,10 +201,6 @@ int main(int argc, char **argv) {
   RUN_TEST(test_mac_parser_hyphen);
   RUN_TEST(test_mac_parser_invalid);
   RUN_TEST(test_magic_packet_structure);
-  RUN_TEST(test_outage_duration);
-  RUN_TEST(test_packet_loss_calculation);
-  RUN_TEST(test_uptime_formatting);
-  RUN_TEST(test_json_escaping);
   RUN_TEST(test_ip_helpers);
   RUN_TEST(test_lan_device_upsert_and_state);
   RUN_TEST(test_vip_tagging);

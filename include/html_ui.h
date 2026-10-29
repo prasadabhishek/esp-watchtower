@@ -597,10 +597,10 @@ async function submitAddVip() {
   const ip = document.getElementById('vipInputIp').value.trim();
   const name = document.getElementById('vipInputName').value.trim();
   if (!ip) return;
-  await fetch('/api/vip/add', {
+  await fetch('/api/vip/toggle', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ip: ip, name: name || ('Target ' + ip) })
+    body: JSON.stringify({ ip: ip, vip: true, name: name || ('Target ' + ip) })
   });
   closeAddVipModal();
   document.getElementById('vipInputIp').value = '';
